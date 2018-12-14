@@ -1,6 +1,6 @@
 import torch
 import torch.distributed.deprecated as dist
-from datasource import Mnist, Mnist_noniid
+from datasource import Mnist, Mnist_noniid, Cifar10, Cifar10_noniid
 import model
 import time
 import copy
@@ -13,48 +13,36 @@ IID = False
 def get_new_model(model, group):
     for param in model.parameters():
         dist.broadcast(param.data, src=0, group=group)
-    #print(dist.get_rank())
     return  model
 
 def run(size, rank):
 
     modell = model.CNN()
-    #modell = model.AlexNet()
 
     optimizer = torch.optim.Adam(modell.parameters(), lr=LR)
     loss_func = torch.nn.CrossEntropyLoss()
 
-    if(IID == True):
+    if IID == True:
         train_loader = Mnist().get_train_data()
-        test_data = Mnist().get_test_data()
+        test_loader = Mnist().get_test_data()
     else:
-        if(rank > 0):
-            if(rank == 1):
+        if rank > 0:
+            if rank == 1:
                 train_loader = Mnist_noniid().get_train_data1()
-                test_data = Mnist_noniid().get_test_data1()
-            if(rank == 2):
+                test_loader = Mnist_noniid().get_test_data()
+            if rank == 2:
                 train_loader = Mnist_noniid().get_train_data2()
-                test_data = Mnist_noniid().get_test_data2()
-            if(rank == 3):
+            if rank == 3:
                 train_loader = Mnist_noniid().get_train_data3()
-                test_data = Mnist_noniid().get_test_data3()
-            if(rank == 4):
+            if rank == 4:
                 train_loader = Mnist_noniid().get_train_data4()
-                test_data = Mnist_noniid().get_test_data4()
-            if(rank == 5):
+            if rank == 5:
                 train_loader = Mnist_noniid().get_train_data5()
-                test_data = Mnist_noniid().get_test_data5()
  
-
-    #size = dist.get_world_size()
-    #rank = dist.get_rank()
-
-    #train_loader = Mnist().get_train_data()
-    #test_data = Mnist().get_test_data()
-
-    for step, (b_x, b_y) in enumerate(test_data):
-        test_x = b_x
-        test_y = b_y
+    if rank == 1:
+        for step, (b_x, b_y) in enumerate(test_loader):
+            test_x = b_x
+            test_y = b_y
 
     group_list = []
     for i in range(size):
@@ -65,12 +53,13 @@ def run(size, rank):
     for epoch in range(MAX_EPOCH):
 
         modell = get_new_model(modell, group)
-        #current_model = copy.deepcopy(modell)
+
+        if rank == 1:
+            test_output, last_layer = modell(test_x)
+            pred_y = torch.max(test_output, 1)[1].data.numpy()
+            accuracy = float((pred_y == test_y.data.numpy()).astype(int).sum()) / float(test_y.size(0))
 
         for step, (b_x, b_y) in enumerate(train_loader):
-
-            #modell = get_new_model(modell)
-            #current_model = copy.deepcopy(modell)
 
             output = modell(b_x)[0]
             loss = loss_func(output, b_y)
@@ -78,20 +67,15 @@ def run(size, rank):
             loss.backward()   
             optimizer.step()
 
-
-        #new_model = copy.deepcopy(modell)
-
-        #for param1, param2 in zip( current_model.parameters(), new_model.parameters() ):
-            #dist.reduce(param2.data-param1.data, dst=0, op=dist.reduce_op.SUM, group=group)
-
         for param in modell.parameters():
             dist.reduce(param.data, dst=0, op=dist.reduce_op.SUM, group=group)
 
+        if rank == 1:
+            print('Epoch: ', epoch, ' Rank: ', rank, '| train loss: %.4f' % loss.data.numpy(), '| test accuracy: %.2f' % accuracy)
+            with open("file"+str(rank)+".txt", 'a') as fo:
+                fo.write(str(epoch) + "    " + str(rank) + "    " + str(accuracy) + "\n")
 
-        test_output, last_layer = modell(test_x)
-        pred_y = torch.max(test_output, 1)[1].data.numpy()
-        accuracy = float((pred_y == test_y.data.numpy()).astype(int).sum()) / float(test_y.size(0))
-        print('Epoch: ', epoch, ' Rank: ', rank, '| train loss: %.4f' % loss.data.numpy(), '| test accuracy: %.2f' % accuracy)
+
 
                 
 def init_processes(size, rank, run):
