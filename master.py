@@ -1,6 +1,7 @@
 import torch
 import torch.distributed.deprecated as dist
 import model
+from datasource import Mnist
 import time
 import sys
 
@@ -21,8 +22,6 @@ def run():
     while(1):
 
         for param in modell.parameters():
-            #for dst in range(1, size):
-                #dist.send(param.data, dst=dst)
             dist.broadcast(param.data, src=0, group=group)
 
         for param in modell.parameters():
