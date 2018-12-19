@@ -115,7 +115,7 @@ class Cifar10_noniid():
         self.test_data = datasets.CIFAR10(root='./cifar10/', train=False, transform=transforms.ToTensor())
 
         idxs = np.arange(len(self.train_data))
-        labels = self.train_data.train_labels.numpy()
+        labels = np.array(self.train_data.train_labels)
         idxs_labels = np.vstack((idxs, labels))
         idxs_labels = idxs_labels[  :  , idxs_labels[1, :].argsort()]
         idxs = idxs_labels[0, :]
