@@ -10,11 +10,6 @@ import time
 LR = 0.001
 IID = False
 
-def get_global_model(model, group):
-    for param in model.parameters():
-        dist.broadcast(param.data, src=0, group=group)
-    return model
-
 def get_local_data(rank, batchsize):
     if IID == True:
         train_loader = Mnist(batchsize).get_train_data()
