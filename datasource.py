@@ -13,10 +13,6 @@ class DatasetSplit(Dataset):
         return len(self.idxs)
 
     def __getitem__(self, item):
-        #error liuying
-        #only integers, slices (`:`), ellipsis (`...`), None and long or byte Variables are valid indices (got numpy.float64)
-        #print("item",item)
-        #print("self.idxs[item]",self.idxs[item])
         image, label = self.dataset[int(self.idxs[item])]
         return image, label
 
@@ -26,12 +22,11 @@ class Mnist():
     MAX_NUM_CLASSES_PER_CLIENT = 5
     BATCH_SIZE = 100
 
-    def __init__(self):
-
+    def __init__(self, batchsize):
         self.train_data = datasets.MNIST(root='./mnist/', train=True, transform=transforms.ToTensor(), download=True)
         self.test_data = datasets.MNIST(root='./mnist/', train=False, transform=transforms.ToTensor())
 
-        self.train_loader = torch.utils.data.DataLoader(dataset=self.train_data, batch_size=Mnist.BATCH_SIZE, shuffle=True)
+        self.train_loader = torch.utils.data.DataLoader(dataset=self.train_data, batch_size=batchsize, shuffle=True)
         self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
 
     def get_train_data(self):
@@ -47,88 +42,45 @@ class Mnist_noniid():
     MAX_NUM_CLASSES_PER_CLIENT = 5
     BATCH_SIZE = 100
 
-    def __init__(self):
+    def __init__(self, batchsize):
+        self.train_data = datasets.MNIST(root='./mnist/', train=True, transform=transforms.ToTensor(), download=True)
+        self.test_data = datasets.MNIST(root='./mnist/', train=False, transform=transforms.ToTensor())
 
-        self.train_data = datasets.MNIST('./mnist/', train=True, download=True,
-                       transform=transforms.Compose([
-                           transforms.ToTensor(),
-                           transforms.Normalize((0.1307,), (0.3081,))
-                       ]))
         idxs = np.arange(len(self.train_data))
         labels = self.train_data.train_labels.numpy()
-
         idxs_labels = np.vstack((idxs, labels))
-
         idxs_labels = idxs_labels[  :  , idxs_labels[1, :].argsort()]
-
         idxs = idxs_labels[0, :]
-        #idxs is the rank arrange according to class
+
         p1 = idxs[0:12000]
         p2 = idxs[12000:24000]
         p3 = idxs[24000:36000]
         p4 = idxs[36000:48000]
         p5 = idxs[48000:60000]
 
+        self.train_loader1 = DataLoader(DatasetSplit(self.train_data, p1), batch_size=batchsize, shuffle=True)
+        self.train_loader2 = DataLoader(DatasetSplit(self.train_data, p2), batch_size=batchsize, shuffle=True)
+        self.train_loader3 = DataLoader(DatasetSplit(self.train_data, p3), batch_size=batchsize, shuffle=True)
+        self.train_loader4 = DataLoader(DatasetSplit(self.train_data, p4), batch_size=batchsize, shuffle=True)
+        self.train_loader5 = DataLoader(DatasetSplit(self.train_data, p5), batch_size=batchsize, shuffle=True)
 
-        self.part1 = DataLoader(DatasetSplit(self.train_data, p1), batch_size=Mnist_noniid.BATCH_SIZE, shuffle=True)
-        self.part2 = DataLoader(DatasetSplit(self.train_data, p2), batch_size=Mnist_noniid.BATCH_SIZE, shuffle=True)
-        self.part3 = DataLoader(DatasetSplit(self.train_data, p3), batch_size=Mnist_noniid.BATCH_SIZE, shuffle=True)
-        self.part4 = DataLoader(DatasetSplit(self.train_data, p4), batch_size=Mnist_noniid.BATCH_SIZE, shuffle=True)
-        self.part5 = DataLoader(DatasetSplit(self.train_data, p5), batch_size=Mnist_noniid.BATCH_SIZE, shuffle=True)
-
-
-
-        self.test_data = datasets.MNIST(root='./mnist/', train=False, transform=transforms.ToTensor())
-
-        idxs = np.arange(len(self.test_data))
-        labels = self.test_data.test_labels.numpy()
-
-        idxs_labels = np.vstack((idxs, labels))
-
-        #idxs_labels = idxs_labels[  :  , idxs_labels[1, :].argsort()]
-
-        idxs = idxs_labels[0, :]
-        p1 = idxs[0:2000]
-        p2 = idxs[2000:4000]
-        p3 = idxs[4000:6000]
-        p4 = idxs[6000:8000]
-        p5 = idxs[8000:10000]
-
-        #self.testpart1 = DataLoader(DatasetSplit(self.test_data, p1), batch_size=2000, shuffle=True)
-        #self.testpart2 = DataLoader(DatasetSplit(self.test_data, p2), batch_size=2000, shuffle=True)
-        #self.testpart3 = DataLoader(DatasetSplit(self.test_data, p3), batch_size=2000, shuffle=True)
-        #self.testpart4 = DataLoader(DatasetSplit(self.test_data, p4), batch_size=2000, shuffle=True)
-        #self.testpart5 = DataLoader(DatasetSplit(self.test_data, p5), batch_size=2000, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
 
 
-        self.testpart = DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart2 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart3 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart4 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart5 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-
-
-    def get_train_data1(self):
-        return self.part1
+    def get_train_data1(self):  
+        return self.train_loader1
     def get_train_data2(self):
-        return self.part2
+        return self.train_loader2
     def get_train_data3(self):
-        return self.part3
+        return self.train_loader3
     def get_train_data4(self):
-        return self.part4
+        return self.train_loader4
     def get_train_data5(self):
-        return self.part5
+        return self.train_loader5
 
     def get_test_data(self):
-        return self.testpart
-    #def get_test_data2(self):
-        #return self.testpart2
-    #def get_test_data3(self):
-        #return self.testpart3
-    #def get_test_data4(self):
-        #return self.testpart4
-    #def get_test_data5(self):
-        #return self.testpart5
+        return self.test_loader
+
 
 
 class Cifar10():
@@ -136,13 +88,13 @@ class Cifar10():
     MAX_NUM_CLASSES_PER_CLIENT = 5
     BATCH_SIZE = 100
 
-    def __init__(self):
+    def __init__(self, batchsize):
 
         self.train_data = datasets.CIFAR10(root='./cifar10/', train=True, transform=transforms.ToTensor(), download=True)
         self.test_data = datasets.CIFAR10(root='./cifar10/', train=False, transform=transforms.ToTensor())
 
-        self.train_loader = torch.utils.data.DataLoader(dataset=self.train_data, batch_size=Cifar10.BATCH_SIZE, shuffle=True)
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=Cifar10.BATCH_SIZE, shuffle=True)
+        self.train_loader = torch.utils.data.DataLoader(dataset=self.train_data, batch_size=batchsize, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
 
     def get_train_data(self):
         return self.train_loader
@@ -152,99 +104,47 @@ class Cifar10():
 
 
 
+
 class Cifar10_noniid():
     IID = False
     MAX_NUM_CLASSES_PER_CLIENT = 5
     BATCH_SIZE = 100
 
-    def __init__(self):
-
-        self.train_data = datasets.CIFAR10('./cifar10/', train=True, download=True,
-                       transform=transforms.Compose([
-                           transforms.ToTensor(),
-                           transforms.Normalize((0.1307,), (0.3081,))
-                       ]))
-
+    def __init__(self, batchsize):
+        self.train_data = datasets.CIFAR10(root='./cifar10/', train=True, transform=transforms.ToTensor(), download=True)
+        self.test_data = datasets.CIFAR10(root='./cifar10/', train=False, transform=transforms.ToTensor())
 
         idxs = np.arange(len(self.train_data))
-        labels = np.array( self.train_data.train_labels )
-
+        labels = self.train_data.train_labels.numpy()
         idxs_labels = np.vstack((idxs, labels))
-
         idxs_labels = idxs_labels[  :  , idxs_labels[1, :].argsort()]
-
         idxs = idxs_labels[0, :]
-        #idxs is the rank arrange according to class
+
         p1 = idxs[0:10000]
         p2 = idxs[10000:20000]
         p3 = idxs[20000:30000]
         p4 = idxs[30000:40000]
         p5 = idxs[40000:50000]
 
+        self.train_loader1 = DataLoader(DatasetSplit(self.train_data, p1), batch_size=batchsize, shuffle=True)
+        self.train_loader2 = DataLoader(DatasetSplit(self.train_data, p2), batch_size=batchsize, shuffle=True)
+        self.train_loader3 = DataLoader(DatasetSplit(self.train_data, p3), batch_size=batchsize, shuffle=True)
+        self.train_loader4 = DataLoader(DatasetSplit(self.train_data, p4), batch_size=batchsize, shuffle=True)
+        self.train_loader5 = DataLoader(DatasetSplit(self.train_data, p5), batch_size=batchsize, shuffle=True)
 
-        self.part1 = DataLoader(DatasetSplit(self.train_data, p1), batch_size=Cifar10_noniid.BATCH_SIZE, shuffle=True)
-        self.part2 = DataLoader(DatasetSplit(self.train_data, p2), batch_size=Cifar10_noniid.BATCH_SIZE, shuffle=True)
-        self.part3 = DataLoader(DatasetSplit(self.train_data, p3), batch_size=Cifar10_noniid.BATCH_SIZE, shuffle=True)
-        self.part4 = DataLoader(DatasetSplit(self.train_data, p4), batch_size=Cifar10_noniid.BATCH_SIZE, shuffle=True)
-        self.part5 = DataLoader(DatasetSplit(self.train_data, p5), batch_size=Cifar10_noniid.BATCH_SIZE, shuffle=True)
-
-
-
-        self.test_data = datasets.CIFAR10(root='./cifar10/', train=False, transform=transforms.ToTensor())
-        idxs = np.arange(len(self.test_data))
-        labels = np.array( self.test_data.test_labels )
-
-        idxs_labels = np.vstack((idxs, labels))
-
-        #idxs_labels = idxs_labels[  :  , idxs_labels[1, :].argsort()]
-
-        idxs = idxs_labels[0, :]
-        p1 = idxs[0:2000]
-        p2 = idxs[2000:4000]
-        p3 = idxs[4000:6000]
-        p4 = idxs[6000:8000]
-        p5 = idxs[8000:10000]
-
-        #self.testpart1 = DataLoader(DatasetSplit(self.test_data, p1), batch_size=2000, shuffle=True)
-        #self.testpart2 = DataLoader(DatasetSplit(self.test_data, p2), batch_size=2000, shuffle=True)
-        #self.testpart3 = DataLoader(DatasetSplit(self.test_data, p3), batch_size=2000, shuffle=True)
-        #self.testpart4 = DataLoader(DatasetSplit(self.test_data, p4), batch_size=2000, shuffle=True)
-        #self.testpart5 = DataLoader(DatasetSplit(self.test_data, p5), batch_size=2000, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
 
 
-        self.testpart = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart2 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart3 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart4 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-        #self.testpart5 = DataLoader(self.test_data, batch_size=10000, shuffle=True)
-
-
-    def get_train_data1(self):
-        return self.part1
+    def get_train_data1(self):  
+        return self.train_loader1
     def get_train_data2(self):
-        return self.part2
+        return self.train_loader2
     def get_train_data3(self):
-        return self.part3
+        return self.train_loader3
     def get_train_data4(self):
-        return self.part4
+        return self.train_loader4
     def get_train_data5(self):
-        return self.part5
+        return self.train_loader5
 
     def get_test_data(self):
-        return self.testpart
-    #def get_test_data2(self):
-        #return self.testpart2
-    #def get_test_data3(self):
-        #return self.testpart3
-    #def get_test_data4(self):
-        #return self.testpart4
-    #def get_test_data5(self):
-        #return self.testpart5
-
-
-
-if __name__ == '__main__':
-
-    print( "__name__ == __main__" )
-
-    
+        return self.test_loader
