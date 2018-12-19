@@ -6,6 +6,8 @@ import copy
 from torch.multiprocessing import Process
 import argparse
 import time
+import sys
+sys.stdout.flush()
 
 LR = 0.001
 IID = False
@@ -38,10 +40,14 @@ def get_testset(batchsize=100):
 
 def init_param(model, src, group):
     for param in model.parameters():
+        print(param)
+        sys.stdout.flush()
         dist.broadcast(param.data, src=src, group=group)
-
+        print('done')
+        sys.stdout.flush()
 
 def run(size, rank, epoch, batchsize):
+    print('run')
     MAX_EPOCH = epoch
     model = CNNMnist()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
@@ -50,12 +56,14 @@ def run(size, rank, epoch, batchsize):
     train_loader = get_local_data(rank, batchsize)
     if rank == 0 :
         test_x, test_y = get_testset()
-        fo = open("file"+str(rank)+".txt", 'w')
+#        fo = open("file"+str(rank)+".txt", 'w')
 
     group_list = [i for i in range(size)]
     group = dist.new_group(group_list)
 
     for epoch in range(MAX_EPOCH):
+        print('enter epoch: '+str(epoch))
+        sys.stdout.flush()
         if epoch == 0:
             init_param(model, 0, group)
         
@@ -64,7 +72,7 @@ def run(size, rank, epoch, batchsize):
             pred_y = torch.max(test_output, 1)[1].data.numpy()
             accuracy = float((pred_y == test_y.data.numpy()).astype(int).sum()) / float(test_y.size(0))
             print('Epoch: ', epoch, ' Rank: ', rank, '| test accuracy: %.2f' % accuracy)
-            fo.write(str(epoch) + "    " + str(rank) + "    " + str(accuracy) + "\n")
+#            fo.write(str(epoch) + "    " + str(rank) + "    " + str(accuracy) + "\n")
 
         for step, (b_x, b_y) in enumerate(train_loader):
             optimizer.zero_grad()
@@ -76,10 +84,9 @@ def run(size, rank, epoch, batchsize):
         for param in model.parameters():
             dist.all_reduce(param.data, op=dist.reduce_op.SUM, group=group)
             param.data /= size
-    
-    fo.close()
 
 def init_processes(address, port, size, rank, epoch, batchsize, run):
+    print('enter init_process')
     address = 'tcp://' + address + ':' + str(port)
     dist.init_process_group(backend='tcp', init_method=address, world_size=size, rank=rank)
     run(size, rank, epoch, batchsize)
@@ -88,10 +95,10 @@ def init_processes(address, port, size, rank, epoch, batchsize, run):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--address', '-a', type=str, default='127.0.0.1')
-    parser.add_argument('--port', '-p', type=int, default=5000)
+    parser.add_argument('--port', '-p', type=int, default=22222)
     parser.add_argument('--size', '-s', type=int, default=5)
     parser.add_argument('--rank', '-r', type=int, default=0)
-    parser.add_argument('--epoch', '-e', type=int, default=500)
+    parser.add_argument('--epoch', '-e', type=int, default=2)
     parser.add_argument('--batchsize', '-b', type=int, default=100)
     args = parser.parse_args()
     
@@ -103,4 +110,3 @@ if __name__ == "__main__":
     batchsize = args.batchsize
 
     init_processes(address, port, size, rank, epoch, batchsize, run)
-
