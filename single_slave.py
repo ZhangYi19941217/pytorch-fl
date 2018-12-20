@@ -11,28 +11,34 @@ sys.stdout.flush()
 
 LR = 0.001
 IID = False
+DATA_SET = 'Mnist'
+#DATA_SET = 'Cifar10'
+MODEL = 'CNN'
 
-def get_local_data(rank, batchsize):
+def get_local_data(size, rank, batchsize):
     if IID == True:
-        train_loader = Mnist(batchsize).get_train_data()
+        if DATA_SET == 'Mnist':
+            train_loader = Mnist(batchsize).get_train_data()
+        if DATA_SET == 'Cifar10':
+            train_loader = Cifar10(batchsize).get_train_data()
     else:
-        if rank == 0:
-            train_loader = Mnist_noniid(batchsize).get_train_data1()
-        if rank == 1:
-            train_loader = Mnist_noniid(batchsize).get_train_data2()
-        if rank == 2:
-            train_loader = Mnist_noniid(batchsize).get_train_data3()
-        if rank == 3:
-            train_loader = Mnist_noniid(batchsize).get_train_data4()
-        if rank == 4:
-            train_loader = Mnist_noniid(batchsize).get_train_data5()
+        if DATA_SET == 'Mnist':
+            train_loader = Mnist_noniid(batchsize, size).get_train_data(rank)
+        if DATA_SET == 'Cifar10':
+            train_loader = Cifar10_noniid(batchsize, size).get_train_data(rank)
     return train_loader
 
-def get_testset(batchsize=100):
+def get_testset():
     if IID == True:
-        test_loader = Mnist(batchsize).get_test_data()
+        if DATA_SET == 'Mnist':
+            test_loader = Mnist().get_test_data()
+        if DATA_SET == 'Cifar10':
+            test_loader = Cifar10().get_test_data()
     else:
-        test_loader = Mnist_noniid(batchsize).get_test_data()
+        if DATA_SET == 'Mnist':
+            test_loader = Mnist_noniid().get_test_data()
+        if DATA_SET == 'Cifar10':
+            test_loader = Cifar10_noniid().get_test_data()
     for step, (b_x, b_y) in enumerate(test_loader):
         test_x = b_x
         test_y = b_y
@@ -49,20 +55,24 @@ def init_param(model, src, group):
 def run(size, rank, epoch, batchsize):
     print('run')
     MAX_EPOCH = epoch
-    model = CNNMnist()
+    if MODEL == 'CNN' and DATA_SET == 'Mnist':
+        model = CNNMnist()
+    if MODEL == 'CNN' and DATA_SET == 'Cifar10':
+        model = CNNCifar()
+
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     loss_func = torch.nn.CrossEntropyLoss()
 
-    train_loader = get_local_data(rank, batchsize)
+    train_loader = get_local_data(size, rank, batchsize)
     if rank == 0 :
         test_x, test_y = get_testset()
-#        fo = open("file"+str(rank)+".txt", 'w')
+        #fo = open("file"+str(rank)+".txt", 'w')
 
     group_list = [i for i in range(size)]
     group = dist.new_group(group_list)
 
     for epoch in range(MAX_EPOCH):
-        print('enter epoch: '+str(epoch))
+        print('enter epoch: ' + str(epoch))
         sys.stdout.flush()
         if epoch == 0:
             init_param(model, 0, group)
@@ -72,7 +82,7 @@ def run(size, rank, epoch, batchsize):
             pred_y = torch.max(test_output, 1)[1].data.numpy()
             accuracy = float((pred_y == test_y.data.numpy()).astype(int).sum()) / float(test_y.size(0))
             print('Epoch: ', epoch, ' Rank: ', rank, '| test accuracy: %.2f' % accuracy)
-#            fo.write(str(epoch) + "    " + str(rank) + "    " + str(accuracy) + "\n")
+            #fo.write(str(epoch) + "    " + str(rank) + "    " + str(accuracy) + "\n")
 
         for step, (b_x, b_y) in enumerate(train_loader):
             optimizer.zero_grad()
@@ -84,6 +94,8 @@ def run(size, rank, epoch, batchsize):
         for param in model.parameters():
             dist.all_reduce(param.data, op=dist.reduce_op.SUM, group=group)
             param.data /= size
+    
+    #fo.close()
 
 def init_processes(address, port, size, rank, epoch, batchsize, run):
     print('enter init_process')
@@ -110,3 +122,4 @@ if __name__ == "__main__":
     batchsize = args.batchsize
 
     init_processes(address, port, size, rank, epoch, batchsize, run)
+
