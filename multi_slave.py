@@ -81,7 +81,7 @@ def load_model(model, group, rank):
 def all_reduce(model, size, group):
     for param in model.parameters():
         dist.all_reduce(param.data, op=dist.reduce_op.SUM, group=group)
-    param.data /= size
+        param.data /= size
     return model
 
 def exchange(model, size, rank):
