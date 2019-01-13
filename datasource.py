@@ -1,7 +1,8 @@
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
-from torchvision import datasets, transforms 
+from torchvision import datasets, transforms
+import random
 
 
 class DatasetSplit(Dataset):
@@ -22,12 +23,14 @@ class Mnist():
     MAX_NUM_CLASSES_PER_CLIENT = 5
     BATCH_SIZE = 100
 
-    def __init__(self, batchsize=BATCH_SIZE):
+    def __init__(self, rank, batchsize=BATCH_SIZE):
+        random.seed(rank)
+        torch.manual_seed(rank)
         self.train_data = datasets.MNIST(root='./mnist/', train=True, transform=transforms.ToTensor(), download=True)
         self.test_data = datasets.MNIST(root='./mnist/', train=False, transform=transforms.ToTensor())
 
         self.train_loader = torch.utils.data.DataLoader(dataset=self.train_data, batch_size=batchsize, shuffle=True)
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=100, shuffle=True)
 
     def get_train_data(self):
         return self.train_loader
@@ -67,7 +70,7 @@ class Mnist_noniid():
             loader = DataLoader(DatasetSplit(self.train_data, part), batch_size=batchsize, shuffle=True)
             self.train_loader.append(loader)
 
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=100, shuffle=True)
 
     def get_train_data(self, part_id):
         return self.train_loader[part_id]
@@ -82,13 +85,14 @@ class Cifar10():
     MAX_NUM_CLASSES_PER_CLIENT = 5
     BATCH_SIZE = 100
 
-    def __init__(self, batchsize=BATCH_SIZE):
-
+    def __init__(self, rank, batchsize=BATCH_SIZE):
+        random.seed(rank)
+        torch.manual_seed(rank)
         self.train_data = datasets.CIFAR10(root='./cifar10/', train=True, transform=transforms.ToTensor(), download=True)
         self.test_data = datasets.CIFAR10(root='./cifar10/', train=False, transform=transforms.ToTensor())
 
         self.train_loader = torch.utils.data.DataLoader(dataset=self.train_data, batch_size=batchsize, shuffle=True)
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=100, shuffle=True)
 
     def get_train_data(self):
         return self.train_loader
@@ -127,7 +131,7 @@ class Cifar10_noniid():
             loader = DataLoader(DatasetSplit(self.train_data, part), batch_size=batchsize, shuffle=True)
             self.train_loader.append(loader)
 
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=100, shuffle=True)
 
     def get_train_data(self, part_id):
         return self.train_loader[part_id]
