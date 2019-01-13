@@ -144,7 +144,7 @@ def run(size, rank, epoch, batchsize):
     #fo.close()
 
 def init_processes(size, rank, epoch, batchsize, run):
-    dist.init_process_group(backend='tcp', init_method='tcp://127.0.0.1:22222', world_size=size, rank=rank)
+    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:22222', world_size=size, rank=rank)
     run(size, rank, epoch, batchsize)
 
 
