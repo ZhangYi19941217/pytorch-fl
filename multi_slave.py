@@ -118,8 +118,8 @@ def run(size, rank, epoch, batchsize):
                 test_x = test_x.cuda()
                 test_y = test_y.cuda()
                 test_output = model(test_x)
-                pred_y = torch.max(test_output, 1)[1].data.numpy()
-                accuracy += float((pred_y == test_y.data.numpy()).astype(int).sum()) / float(test_y.size(0))
+                pred_y = torch.max(test_output, 1)[1].data.cpu().numpy()
+                accuracy += float((pred_y == test_y.data.cpu().numpy()).astype(int).sum()) / float(test_y.size(0))
             accuracy /= 100
             print('Round: ', round, 'Rank: ', rank, '| test accuracy: %.4f' % accuracy)
             #fo.write(str(round) + "    " + str(rank) + "    " + str(accuracy) + "\n")
