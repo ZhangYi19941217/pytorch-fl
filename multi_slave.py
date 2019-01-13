@@ -98,7 +98,7 @@ def run(size, rank, epoch, batchsize):
         model = CNNCifar()
     if MODEL == 'ResNet18' and DATA_SET == 'Cifar10':
         model = ResNet18()
-
+    model.cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
     loss_func = torch.nn.CrossEntropyLoss()
 
