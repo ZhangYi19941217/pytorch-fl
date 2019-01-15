@@ -67,14 +67,16 @@ def save_model(model, round, rank):
 
 def load_model(model, group, rank):
     print('===> Try resume from checkpoint')
-    if os.path.exists('autoencoder' + str(rank) + '.t7'):
-        checkpoint = torch.load('autoencoder' + str(rank) + '.t7')
-        model.load_state_dict(checkpoint['state'])
-        round = checkpoint['round']
-        print('===> Load last checkpoint data')
-    else:
-        round = 0
-        init_param(model, 0, group)
+#    if os.path.exists('autoencoder' + str(rank) + '.t7'):
+#        checkpoint = torch.load('autoencoder' + str(rank) + '.t7')
+#        model.load_state_dict(checkpoint['state'])
+#        round = checkpoint['round']
+#        print('===> Load last checkpoint data')
+#    else:
+#        round = 0
+#        init_param(model, 0, group)
+    round = 0
+    init_param(model, 0, group)
     return model, round
 
 
@@ -115,6 +117,7 @@ def run(size, rank, epoch, batchsize):
 
     model, round = load_model(model, group, rank)
     while round < MAX_ROUND:
+        print(' Start round: '+ str(round))
         sys.stdout.flush()
         if rank == 0:
             test_output = model(test_x)
@@ -131,7 +134,7 @@ def run(size, rank, epoch, batchsize):
                 loss.backward()   
                 optimizer.step()
 
-        model = exchange(model, size, rank)
+#        model = exchange(model, size, rank)
         if (round+1) % ROUND_NUMBER_FOR_REDUCE == 0:
             model = all_reduce(model, size, group)
 
@@ -163,6 +166,7 @@ if __name__ == "__main__":
     rank = args.rank
     epoch = args.epoch
     batchsize = args.batchsize
+    print('Initialization data - address: ' + str(address) + '; port: '+str(port) + '; size: '+str(size) + '; rank: '+ str(rank) + '; epoch: '+str(epoch) + '; batch size: '+str(batchsize))
+    sys.stdout.flush()
 
     init_processes(address, port, size, rank, epoch, batchsize, run)
-
