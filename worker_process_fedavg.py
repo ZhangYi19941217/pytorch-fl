@@ -100,6 +100,19 @@ def exchange(model, world_size, rank):
         dist.recv( param.data, src=(rank-1)%world_size )
     return model
 
+def test(test_loader, model):
+    accuracy = 0
+    positive_test_number = 0
+    total_test_number = 0
+    for step, (test_x, test_y) in enumerate(test_loader):
+        test_output = model(test_x)
+        pred_y = torch.max(test_output, 1)[1].data.numpy()
+        positive_test_number += (pred_y == test_y.data.numpy()).astype(int).sum()
+        total_test_number += float(test_y.size(0))
+    accuracy = positive_test_number / total_test_number
+    return accuracy
+
+
 def run(world_size, rank, group, epoch_per_round, batch_size):
     train_loader = get_local_data(world_size, rank, batch_size)
     test_loader = get_testset(rank)
@@ -112,23 +125,15 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     loss_func = torch.nn.CrossEntropyLoss()
     logging('prepare enter'+str(round)+'; max:'+str(MAX_ROUND))
 
+#    print(list(model.parameters()))
     while round < MAX_ROUND:
         logging(' Start round: '+ str(round))
         if SAVE and round == 0 and not os.path.exists('autoencoder'+str(rank)+'.t7'):
             save_model(model, round, rank)
             logging(' Model Saved')
 
-        if rank == 0:
-            accuracy = 0
-            positive_test_number = 0
-            total_test_number = 0
-            for step, (test_x, test_y) in enumerate(test_loader):
-                test_output = model(test_x)
-                pred_y = torch.max(test_output, 1)[1].data.numpy()
-                positive_test_number += (pred_y == test_y.data.numpy()).astype(int).sum()
-                total_test_number += float(test_y.size(0))
-            accuracy = positive_test_number / total_test_number
-            print('Before round: ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
+        accuracy = test(test_loader, model)
+        print('Before round: ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
 
         for epoch_cnt in range(epoch_per_round):
             logging(epoch_cnt)
@@ -139,24 +144,16 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
                 loss.backward()   
                 optimizer.step()
 
-        if rank < 10:
-            accuracy = 0
-            positive_test_number = 0
-            total_test_number = 0
-            for step, (test_x, test_y) in enumerate(test_loader):
-                test_output = model(test_x)
-                pred_y = torch.max(test_output, 1)[1].data.numpy()
-                positive_test_number += (pred_y == test_y.data.numpy()).astype(int).sum()
-                total_test_number += float(test_y.size(0))
-            accuracy = positive_test_number / total_test_number
-            print('Before All_reduce ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
+        accuracy = test(test_loader, model)
+        print('Before All_reduce ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
 
         gradients = []
         for param1, param2 in zip(initial_model.parameters(), model.parameters()):
+#            print(param1.shape)
             gradients.append(param2 - param1)
         print('local gradient:')
         print(gradients[0][0])
-        print()
+#        print(gradients)
 
         if EXCHANGE:
             model = exchange(model, world_size, rank)
@@ -170,19 +167,11 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
             gradients.append(param2 - param1)
         print('glocal gradient:')
         print(gradients[0][0])
+#        print(gradients)
         print()
 
-        if rank == 0:
-            accuracy = 0
-            positive_test_number = 0
-            total_test_number = 0
-            for step, (test_x, test_y) in enumerate(test_loader):
-                test_output = model(test_x)
-                pred_y = torch.max(test_output, 1)[1].data.numpy()
-                positive_test_number += (pred_y == test_y.data.numpy()).astype(int).sum()
-                total_test_number += float(test_y.size(0))
-            accuracy = positive_test_number / total_test_number
-            print('After All_reduce ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
+        accuracy = test(test_loader, model)
+        print('After All_reduce ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
 
         logging(' Finish round: '+str(round)+'\n')
         round += 1

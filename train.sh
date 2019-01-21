@@ -7,9 +7,18 @@ do
 		world_size=$((world_size+1))
 done
 
-num=0
-for i in $workers
-do
-	nohup ssh $i "python /home/ubuntu/pytorch-fl/worker_process.py --master_address='tcp://'$master':22222' --rank=$num --world_size=$world_size" >/home/ubuntu/worker_$num.log 2>&1 &
-	num=$((num+1))
-done
+if [ "$1" == "" ]; then
+	num=0
+	for i in $workers
+	do
+		nohup ssh $i "python /home/ubuntu/pytorch-fl/worker_process.py --master_address='tcp://'$master':22222' --rank=$num --world_size=$world_size" >/home/ubuntu/worker_$num.log 2>&1 &
+		num=$((num+1))
+	done
+else
+	num=0
+	for i in $workers
+	do
+		nohup ssh $i "python /home/ubuntu/pytorch-fl/worker_process"_"$1.py --master_address='tcp://'$master':22222' --rank=$num --world_size=$world_size" >/home/ubuntu/worker_$num.log 2>&1 &
+		num=$((num+1))
+	done
+fi
