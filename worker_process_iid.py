@@ -11,6 +11,7 @@ import sys
 import os
 sys.stdout.flush()
 
+LR = 1
 LR = 0.001
 MAX_ROUND = 3000
 MAX_ROUND = 1
@@ -118,11 +119,12 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     model, round = load_model(group, rank)
     logging('finish load'+str(rank))
     initial_model = copy.deepcopy(model)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
+    optimizer = torch.optim.SGD(model.parameters(), lr=LR, weight_decay=1e-5)
     loss_func = torch.nn.CrossEntropyLoss()
     logging('prepare enter'+str(round)+'; max:'+str(MAX_ROUND))
 
-#    print(list(model.parameters()))
+    print('model parameters: ')
+    print(list(model.parameters())[0][0])
     while round < MAX_ROUND:
         logging(' Start round: '+ str(round))
         if SAVE and round == 0 and not os.path.exists('autoencoder'+str(rank)+'.t7'):
@@ -135,15 +137,12 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
         for epoch_cnt in range(epoch_per_round):
             logging(epoch_cnt)
             for step, (b_x, b_y) in enumerate(train_loader):
-                logging('step '+str(step))
+#                logging('step '+str(step))
                 optimizer.zero_grad()
                 output = model(b_x)
                 loss = loss_func(output, b_y)
                 loss.backward()   
                 optimizer.step()
-
-        accuracy = test(test_loader, model)
-        print('Before All_reduce ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
 
         gradients = []
         for param1, param2 in zip(initial_model.parameters(), model.parameters()):
@@ -155,7 +154,9 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
 
         # model = all_reduce(model, world_size, group)
         accuracy = test(test_loader, model)
-        print('After All_reduce ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
+        print('After round ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
+        print('model parameters')
+        print(list(model.parameters())[0][0])
 
         logging(' Finish round: '+str(round)+'\n')
         round += 1
@@ -181,5 +182,6 @@ if __name__ == "__main__":
     epoch_per_round = args.epoch_per_round
     batch_size = args.batch_size
     batch_size = 60000
+    batch_size = 128
     logging('Initialization:\n\t master_address: ' + str(master_address) + '; world_size: '+str(world_size) + ';\n\t rank: '+ str(rank) + '; epoch: '+str(epoch_per_round) + '; batch size: '+str(batch_size))
     init_processes(master_address, world_size, rank, epoch_per_round, batch_size, run)

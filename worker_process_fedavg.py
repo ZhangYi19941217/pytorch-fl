@@ -30,6 +30,7 @@ def logging(string):
     sys.stdout.flush()
 
 def get_local_data(world_size, rank, batch_size):
+    logging('enter get local data')
     if IID == True:
         if DATA_SET == 'Mnist':
             train_loader = Mnist(rank, batch_size).get_train_data()
@@ -121,7 +122,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     model, round = load_model(group, rank)
     logging('finish load'+str(rank))
     initial_model = copy.deepcopy(model)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
+    optimizer = torch.optim.SGD(model.parameters(), lr=LR, weight_decay=1e-5)
     loss_func = torch.nn.CrossEntropyLoss()
     logging('prepare enter'+str(round)+'; max:'+str(MAX_ROUND))
 
@@ -138,6 +139,9 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
         for epoch_cnt in range(epoch_per_round):
             logging(epoch_cnt)
             for step, (b_x, b_y) in enumerate(train_loader):
+#                print(list(b_y))
+#                print(len(list(b_y)))
+                print step,
                 optimizer.zero_grad()
                 output = model(b_x)
                 loss = loss_func(output, b_y)
@@ -149,7 +153,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
 
         gradients = []
         for param1, param2 in zip(initial_model.parameters(), model.parameters()):
-#            print(param1.shape)
+            print(param1.shape)
             gradients.append(param2 - param1)
         print('local gradient:')
         print(gradients[0][0])
@@ -198,5 +202,6 @@ if __name__ == "__main__":
     epoch_per_round = args.epoch_per_round
     batch_size = args.batch_size
     batch_size = 30000
+    batch_size = 128
     logging('Initialization:\n\t master_address: ' + str(master_address) + '; world_size: '+str(world_size) + ';\n\t rank: '+ str(rank) + '; epoch: '+str(epoch_per_round) + '; batch size: '+str(batch_size))
     init_processes(master_address, world_size, rank, epoch_per_round, batch_size, run)
