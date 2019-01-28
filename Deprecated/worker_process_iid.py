@@ -11,15 +11,14 @@ import sys
 import os
 sys.stdout.flush()
 
-LR = 1
-LR = 0.001
+#LR = 1
+LR = 0.01
 MAX_ROUND = 3000
-MAX_ROUND = 1
 ROUND_NUMBER_FOR_SAVE = 50
 ROUND_NUMBER_FOR_REDUCE = 5
 IID = True
-DATA_SET = 'Mnist'
-#DATA_SET = 'Cifar10'
+#DATA_SET = 'Mnist'
+DATA_SET = 'Cifar10'
 MODEL = 'CNN'
 #MODEL = 'ResNet18'
 EXCHANGE = False
@@ -29,30 +28,24 @@ def logging(string):
     print(str(datetime.now())+' '+str(string))
     sys.stdout.flush()
 
-def get_local_data(world_size, rank, batch_size):
+def get_train_loader(world_size, rank, batch_size):
     if IID == True:
-        if DATA_SET == 'Mnist':
+        if DATASET == 'Mnist':
             train_loader = Mnist(rank, batch_size).get_train_data()
-        if DATA_SET == 'Cifar10':
+        if DATASET == 'Cifar10':
             train_loader = Cifar10(rank, batch_size).get_train_data()
     else:
-        if DATA_SET == 'Mnist':
+        if DATASET == 'Mnist':
             train_loader = Mnist_noniid(batch_size, world_size).get_train_data(rank)
-        if DATA_SET == 'Cifar10':
+        if DATASET == 'Cifar10':
             train_loader = Cifar10_noniid(batch_size, world_size).get_train_data(rank)
     return train_loader
 
-def get_testset(rank):
-    if IID == True:
-        if DATA_SET == 'Mnist':
-            test_loader = Mnist(rank).get_test_data()
-        if DATA_SET == 'Cifar10':
-            test_loader = Cifar10(rank).get_test_data()
-    else:
-        if DATA_SET == 'Mnist':
-            test_loader = Mnist_noniid().get_test_data()
-        if DATA_SET == 'Cifar10':
-            test_loader = Cifar10_noniid().get_test_data()
+def get_test_loader(rank):
+    if DATASET == 'Mnist':
+        test_loader = Mnist(rank).get_test_data()
+    if DATASET == 'Cifar10':
+        test_loader = Cifar10(rank).get_test_data()
     return test_loader
 
 def init_param(model, src, group):
@@ -65,14 +58,14 @@ def save_model(model, round, rank):
         'state': model.state_dict(),
         'round': round,
         }
-    torch.save(state, 'autoencoder' + str(rank) + '.t7')
+    torch.save(state, 'autoencoder-' + DATASET + '-' + MODEL + '-' + str(rank) + '.t7')
 
 def load_model(group, rank):
-    if MODEL == 'CNN' and DATA_SET == 'Mnist':
+    if MODEL == 'CNN' and DATASET == 'Mnist':
         model = CNNMnist()
-    if MODEL == 'CNN' and DATA_SET == 'Cifar10':
+    if MODEL == 'CNN' and DATASET == 'Cifar10':
         model = CNNCifar()
-    if MODEL == 'ResNet18' and DATA_SET == 'Cifar10':
+    if MODEL == 'ResNet18' and DATASET == 'Cifar10':
         model = ResNet18()
     if SAVE and os.path.exists('autoencoder'+str(rank)+'.t7'):
         logging('===> Try resume from checkpoint')
@@ -112,30 +105,26 @@ def test(test_loader, model):
     return accuracy
 
 def run(world_size, rank, group, epoch_per_round, batch_size):
-    train_loader = get_local_data(world_size, rank, batch_size)
-    test_loader = get_testset(rank)
-
-    logging('start load')
+    train_loader = get_train_loader(world_size, rank, batch_size)
+    test_loader = get_test_loader(rank)
     model, round = load_model(group, rank)
-    logging('finish load'+str(rank))
-    initial_model = copy.deepcopy(model)
     optimizer = torch.optim.SGD(model.parameters(), lr=LR, weight_decay=1e-5)
     loss_func = torch.nn.CrossEntropyLoss()
-    logging('prepare enter'+str(round)+'; max:'+str(MAX_ROUND))
-
     print('model parameters: ')
-    print(list(model.parameters())[0][0])
+    print(list(model.parameters())[0][0][0])
+    print('\n\n ----- start training -----\n')
+
     while round < MAX_ROUND:
-        logging(' Start round: '+ str(round))
+        initial_model = copy.deepcopy(model)
+        logging('--- start round '+ str(round) + ' ---')
         if SAVE and round == 0 and not os.path.exists('autoencoder'+str(rank)+'.t7'):
             save_model(model, round, rank)
             logging(' Model Saved')
 
         accuracy = test(test_loader, model)
-        print('Before round: ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
+        print(' - Before round: ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
 
         for epoch_cnt in range(epoch_per_round):
-            logging(epoch_cnt)
             for step, (b_x, b_y) in enumerate(train_loader):
 #                logging('step '+str(step))
                 optimizer.zero_grad()
@@ -149,16 +138,20 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
 #            print(param1.shape)
             gradients.append(param2 - param1)
         print('local gradient:')
-        print(gradients[0][0])
-#        print(gradients)
+        print(gradients[0][0][0])
 
-        # model = all_reduce(model, world_size, group)
+        if EXCHANGE:
+            model = exchange(model, world_size, rank)
+            if (round+1) % ROUND_NUMBER_FOR_REDUCE == 0:
+                model = all_reduce(model, world_size, group)
+        else:
+            model = all_reduce(model, world_size, group)
+
         accuracy = test(test_loader, model)
-        print('After round ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
+        print(' - After round ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
         print('model parameters')
-        print(list(model.parameters())[0][0])
-
-        logging(' Finish round: '+str(round)+'\n')
+        print(list(model.parameters())[0][0][0])
+#        logging(' Finish round: '+str(round)+'\n')
         round += 1
 
 def init_processes(master_address, world_size, rank, epoch_per_round, batch_size, run):
@@ -174,6 +167,10 @@ if __name__ == "__main__":
     parser.add_argument('--rank', '-r', type=int, default=0)
     parser.add_argument('--epoch_per_round', '-e', type=int, default=1)
     parser.add_argument('--batch_size', '-b', type=int, default=100)
+    parser.add_argument('--iid', '-I', type=bool, default=True)
+    parser.add_argument('--model', '-M', type=str, default='CNN')
+    parser.add_argument('--dataset', '-D', type=str, default='Cifar10')
+    parser.add_argument('--exchange', '-E', type=bool, default=False)
     args = parser.parse_args()
     
     master_address = args.master_address
@@ -183,5 +180,14 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     batch_size = 60000
     batch_size = 128
-    logging('Initialization:\n\t master_address: ' + str(master_address) + '; world_size: '+str(world_size) + ';\n\t rank: '+ str(rank) + '; epoch: '+str(epoch_per_round) + '; batch size: '+str(batch_size))
+
+#    global MODEL, DATASET, IID, EXCHANGE
+    MODEL = args.model
+    DATASET = args.dataset
+    IID = args.iid
+    EXCHANGE = args.exchange
+
+    logging('Initialization:\n\t model: ' + MODEL + '; dataset: ' + DATASET + '; iid: ' + str(IID)  +'; exchange: ' + str(EXCHANGE)
+            + '\n\t master_address: ' + str(master_address) + '; world_size: '+str(world_size) 
+            + ';\n\t rank: '+ str(rank) + '; epoch: '+str(epoch_per_round) + '; batch size: '+str(batch_size))
     init_processes(master_address, world_size, rank, epoch_per_round, batch_size, run)

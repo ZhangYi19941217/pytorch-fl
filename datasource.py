@@ -131,6 +131,7 @@ class Mnist_noniid():
         self.test_data = datasets.MNIST(root='./mnist/', train=False, transform=transforms.ToTensor())
 
         idxs = np.arange(len(self.train_data))
+        print(type(self.train_data.train_labels))
         labels = self.train_data.train_labels.numpy()
         idxs_labels = np.vstack((idxs, labels))
         idxs_labels = idxs_labels[  :  , idxs_labels[1, :].argsort()]
@@ -189,10 +190,13 @@ class Cifar10_noniid():
 
     def __init__(self, batchsize=BATCH_SIZE, total_part=5):
         self.train_data = datasets.CIFAR10(root='./cifar10/', train=True, transform=transforms.ToTensor(), download=True)
+        self.train_data_mnist = datasets.MNIST(root='./mnist/', train=True, transform=transforms.ToTensor(), download=True)
         self.test_data = datasets.CIFAR10(root='./cifar10/', train=False, transform=transforms.ToTensor())
 
         idxs = np.arange(len(self.train_data))
-        labels = self.train_data.train_labels.numpy()
+#        print(type(self.train_data.train_labels))
+#        print(type(self.train_data_mnist.train_labels))
+        labels = np.array(self.train_data.train_labels)
         idxs_labels = np.vstack((idxs, labels))
         idxs_labels = idxs_labels[  :  , idxs_labels[1, :].argsort()]
         idxs = idxs_labels[0, :]
