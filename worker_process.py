@@ -23,6 +23,7 @@ MODEL = 'CNN'
 #MODEL = 'ResNet18'
 EXCHANGE = False
 SAVE = True
+CUDA = torch.cuda.is_available()
 
 def logging(string):
     print(str(datetime.now())+' '+str(string))
@@ -53,7 +54,7 @@ def init_param(model, src, group):
         dist.broadcast(param.data, src=src, group=group)
     
 def save_model(model, round, rank):
-    logging('===> Saving models...')
+#    logging('===> Saving models...')
     state = {
         'state': model.state_dict(),
         'round': round,
@@ -67,15 +68,18 @@ def load_model(group, rank):
         model = CNNCifar()
     if MODEL == 'ResNet18' and DATASET == 'Cifar10':
         model = ResNet18()
+    if CUDA:
+        model.cuda()
     if SAVE and os.path.exists('autoencoder'+str(rank)+'.t7'):
         logging('===> Try resume from checkpoint')
         checkpoint = torch.load('autoencoder'+str(rank)+'.t7')
         model.load_state_dict(checkpoint['state'])
         round = checkpoint['round']
-        print('===> Load last checkpoint data')
+        logging('model loaded')
     else:
         round = 0
         init_param(model, 0, group)
+        logging('model created')
     return model, round
 
 def all_reduce(model, world_size, group):
@@ -97,9 +101,12 @@ def test(test_loader, model):
     positive_test_number = 0
     total_test_number = 0
     for step, (test_x, test_y) in enumerate(test_loader):
+        if CUDA:
+            test_x = test_x.cuda()
+            test_y = test_y.cuda()
         test_output = model(test_x)
-        pred_y = torch.max(test_output, 1)[1].data.numpy()
-        positive_test_number += (pred_y == test_y.data.numpy()).astype(int).sum()
+        pred_y = torch.max(test_output, 1)[1].data.cpu().numpy()
+        positive_test_number += (pred_y == test_y.data.cpu().numpy()).astype(int).sum()
         total_test_number += float(test_y.size(0))
     accuracy = positive_test_number / total_test_number
     return accuracy
@@ -113,14 +120,16 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     print('model parameters: ')
     print(list(model.parameters())[0][0][0])
     print('\n\n ----- start training -----')
+  #  sys.stdout.flush()
 
     while round < MAX_ROUND:
         initial_model = copy.deepcopy(model)
         print('\n')
-        logging('--- start round '+ str(round) + ' ---')
+        sys.stdout.flush()
+        print('--- start round '+ str(round) + ' ---')
         if SAVE and round == 0 and not os.path.exists('autoencoder'+str(rank)+'.t7'):
             save_model(model, round, rank)
-            logging(' Model Saved')
+            logging('\t## Model Saved')
 
 #        accuracy = test(test_loader, model)
 #        print(' - Before round: ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
@@ -128,6 +137,9 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
         for epoch_cnt in range(epoch_per_round):
             for step, (b_x, b_y) in enumerate(train_loader):
 #                logging('step '+str(step))
+                if CUDA:
+                    b_x = b_x.cuda()
+                    b_y = b_y.cuda()
                 optimizer.zero_grad()
                 output = model(b_x)
                 loss = loss_func(output, b_y)
@@ -138,7 +150,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
         for param1, param2 in zip(initial_model.parameters(), model.parameters()):
 #            print(param1.shape)
             gradients.append(param2 - param1)
-        print('local gradient:')
+        print('$ local gradient:')
         print(gradients[0][0][0])
 
         if EXCHANGE:
@@ -150,14 +162,17 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
 
         accuracy = test(test_loader, model)
 #        print(' - After round ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
-        print('model parameters')
+        print('$ model parameters:')
         print(list(model.parameters())[0][0][0])
         logging(' -- Finish round: '+str(round) + ' -- | test accuracy: '+str(accuracy))
         round += 1
 
 def init_processes(master_address, world_size, rank, epoch_per_round, batch_size, run):
     # change 'tcp' to 'nccl' if running on GPU worker
-    dist.init_process_group(backend='tcp', init_method=master_address, world_size=world_size, rank=rank)
+    if CUDA:
+        dist.init_process_group(backend='nccl', init_method=master_address, world_size=world_size, rank=rank)
+    else:
+        dist.init_process_group(backend='tcp', init_method=master_address, world_size=world_size, rank=rank)
     group = dist.new_group([i for i in range(world_size)])
     run(world_size, rank, group, epoch_per_round, batch_size)
 
