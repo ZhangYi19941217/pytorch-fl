@@ -18,7 +18,7 @@ ROUND_NUMBER_FOR_SAVE = 50
 ROUND_NUMBER_FOR_REDUCE = 5
 IID = True
 #DATA_SET = 'Mnist'
-DATA_SET = 'Cifar10'
+DATASET = 'Cifar10'
 MODEL = 'CNN'
 #MODEL = 'ResNet18'
 EXCHANGE = False
@@ -70,9 +70,9 @@ def load_model(group, rank):
         model = ResNet18()
     if CUDA:
         model.cuda()
-    if SAVE and os.path.exists('autoencoder'+str(rank)+'.t7'):
+    if SAVE and os.path.exists('autoencoder-' + DATASET + '-' + MODEL + '-' + str(rank) + '.t7'):
         logging('===> Try resume from checkpoint')
-        checkpoint = torch.load('autoencoder'+str(rank)+'.t7')
+        checkpoint = torch.load('autoencoder-' + DATASET + '-' + MODEL + '-' + str(rank) + '.t7')
         model.load_state_dict(checkpoint['state'])
         round = checkpoint['round']
         logging('model loaded')
@@ -83,6 +83,7 @@ def load_model(group, rank):
     return model, round
 
 def all_reduce(model, world_size, group):
+#    logging('all reduce')
     for param in model.parameters():
         dist.all_reduce(param.data, op=dist.reduce_op.SUM, group=group)
         param.data /= world_size
@@ -127,7 +128,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
         print('\n')
         sys.stdout.flush()
         print('--- start round '+ str(round) + ' ---')
-        if SAVE and round == 0 and not os.path.exists('autoencoder'+str(rank)+'.t7'):
+        if SAVE and round == 0 and not os.path.exists('autoencoder-' + DATASET + '-' + MODEL + '-' + str(rank) + '.t7'):
             save_model(model, round, rank)
             logging('\t## Model Saved')
 

@@ -10,7 +10,7 @@ done
 model='CNN'
 dataset='Cifar10'
 iid=0
-exchange=1
+exchange=0
 
 num=0
 for i in $workers
