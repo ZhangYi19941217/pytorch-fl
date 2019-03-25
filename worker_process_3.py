@@ -1,7 +1,7 @@
 import torch
 import numpy
-#import torch.distributed.deprecated as dist
-import torch.distributed as dist
+import torch.distributed.deprecated as dist
+#import torch.distributed as dist
 from datasource import Mnist, Mnist_noniid, Cifar10, Cifar10_noniid
 from model import CNNMnist, CNNCifar, ResNet18
 import copy
@@ -128,18 +128,27 @@ class PAS_Manager:
 
         self.observation_window_size = 20
         self.swap_ratio_as_stable = 0.5
-        self.swap_history = numpy.asarray([numpy.zeros(self.flattened_shape) for i in range(self.observation_window_size)])
-        self.swap_count = numpy.asarray([0 for i in range(self.flattened_shape[0])])
+        self.swap_history = torch.zeros(self.observation_window_size, self.flattened_shape[0])
+#        self.swap_history = numpy.asarray([numpy.zeros(self.flattened_shape) for i in range(self.observation_window_size)])
+        self.swap_count = torch.zeros(self.flattened_shape)
+#        self.swap_count = numpy.asarray([0 for i in range(self.flattened_shape[0])])
+        self.phase = 0
 
 
     def update_synchronization_mask(self):
         # update the synchronization mask of each parameter based on global gradient stability
-        numpy.delete(self.swap_history, 0)
-        numpy.append(self.swap_history, self.global_ac_grad * self.last_global_ac_grad)
+        print 'ac & last_ac', self.global_ac_grad, self.last_global_ac_grad
+        print 'product', self.global_ac_grad * self.last_global_ac_grad
+#        numpy.delete(self.swap_history, 0)
+#        self.swap_history = numpy.append(self.swap_history, [self.global_ac_grad * self.last_global_ac_grad], axis=0)
+        self.swap_history = torch.cat((self.swap_history[1:], (self.global_ac_grad*self.last_global_ac_grad).unsqueeze(0)), 0)
+#        self.swap_history = torch.cat((self.swap_history[1:], (self.global_ac_grad*self.last_global_ac_grad)), 0)
+        print self.swap_history[-1], self.swap_history.shape
         self.swap_count = sum(self.swap_history < 0)
+        print self.swap_count
         self.last_global_ac_grad = self.global_ac_grad 
         for i in range(len(self.swap_count)):
-            if self.swap_count[i] > self.swap_ratio_as_stable * self.observation_window_size:
+            if self.synchronization_mask[i] > 0 and self.swap_count[i] > self.swap_ratio_as_stable * self.observation_window_size:
                 print 'position '+str(i)+' flip too often, now frozen'
                 self.synchronization_mask[i] = 0
 
@@ -149,8 +158,13 @@ class PAS_Manager:
                 dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
                 p.data /= self.world_size
 
-
     def sync(self, model, iter_id):
+        if self.phase > 0:
+            for p in model.parameters():
+                dist.all_reduce(p.grad, op=dist.reduce_op.SUM, group=self.group)
+                p.grad /= self.world_size
+            return
+
         grad = [p.grad for p in model.parameters()]
         flattened_grad = torch.tensor([])
         for g in grad:
@@ -173,6 +187,7 @@ class PAS_Manager:
             # unsqueeze transmitted grad to full length flattened grad
             self.global_ac_grad = torch.zeros(self.flattened_shape) 
             self.global_ac_grad[self.synchronization_mask] = transmitted_grad
+            print 'global_ac_grad[0:3]:', self.global_ac_grad[0:3]
 
             # update synchronization mask & prepare gradient
             self.update_synchronization_mask()
@@ -183,6 +198,8 @@ class PAS_Manager:
         for i, p in enumerate(model.parameters()):
             p.grad.data = valid_grad[self.frag_index_list[i][0]:self.frag_index_list[i][1]].view(self.frag_shape_list[i])
 #        model.parameters.grad.data
+        if sum(self.synchronization_mask) == 0:
+            self.phase = 1
    
 
         
