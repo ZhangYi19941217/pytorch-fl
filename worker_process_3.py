@@ -127,7 +127,7 @@ class PAS_Manager:
         self.last_global_ac_grad = torch.zeros(self.flattened_shape)
 
         self.observation_window_size = 20
-        self.swap_ratio_as_stable = 0.5
+        self.swap_ratio_as_stable = 0.6
         self.swap_history = torch.zeros(self.observation_window_size, self.flattened_shape[0])
 #        self.swap_history = numpy.asarray([numpy.zeros(self.flattened_shape) for i in range(self.observation_window_size)])
         self.swap_count = torch.zeros(self.flattened_shape)
@@ -188,6 +188,7 @@ class PAS_Manager:
             self.global_ac_grad = torch.zeros(self.flattened_shape) 
             self.global_ac_grad[self.synchronization_mask] = transmitted_grad
             print 'global_ac_grad[0:3]:', self.global_ac_grad[0:3]
+            print '5081: ',self.global_ac_grad[5081]
 
             # update synchronization mask & prepare gradient
             self.update_synchronization_mask()
@@ -245,7 +246,6 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
 #            logging(' iteration ' + str(iter_id) + ' finished')
 #            pas_manager.after_sync(model, iter_id)
 
-            iter_id += 1
 #            pas_manager.sync(model, iter_id)
 
             if iter_id % INITIAL_FREQ == 0:
@@ -253,6 +253,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
                 logging(' -- Finish epoch: '+str(iter_id/INITIAL_FREQ) + ' -- | test accuracy: '+str(accuracy))
 #                print(pas_manager.sync_frequency_list)
                 epoch_id += 1 
+            iter_id += 1
         #accuracy = test(test_loader, model)
         #print(' - After round ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
         #print('$ model parameters:')
