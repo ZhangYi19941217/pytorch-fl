@@ -131,8 +131,20 @@ class PAS_Manager:
         self.swap_history = torch.zeros(self.observation_window_size, self.flattened_shape[0])
         self.swap_count = torch.zeros(self.flattened_shape)
         self.phase = 0
+        self.local_grad_ema = torch.zeros(self.flattened_shape)
+        self.local_abs_grad_ema = torch.zeros(self.flattened_shape)
+        self.ema_alpha = 0.8
+        self.local_stable_threshold = 0.8
+        self.is_local_stable = torch.zeros(self.flattened_shape).byte()
+        self.is_bifurcated = torch.zeros(self.flattened_shape).byte()
 
     def update_synchronization_mask(self):
+        self.local_grad_ema = self.local_grad_ema * self.ema_alpha + self.local_ac_grad * ( 1 - self.ema_alpha )
+        self.local_abs_grad_ema = self.local_abs_grad_ema * self.ema_alpha + torch.abs(self.local_ac_grad) * (1 - self.ema_alpha)
+        self.is_local_stable = (torch.abs(self.local_grad_ema) / self.local_abs_grad_ema > self.local_stable_threshold).int()
+        dist.all_reduce(self.is_local_stable, op=dist.reduce_op.SUM, group=self.group)
+
+        
         # update the synchronization mask of each parameter based on global gradient stability
         print 'ac & last_ac', self.global_ac_grad, self.last_global_ac_grad
         print 'product', self.global_ac_grad * self.last_global_ac_grad
@@ -182,8 +194,6 @@ class PAS_Manager:
             # unsqueeze transmitted grad to full length flattened grad
             self.global_ac_grad = torch.zeros(self.flattened_shape) 
             self.global_ac_grad[self.synchronization_mask] = transmitted_grad
-            print 'global_ac_grad[0:3]:', self.global_ac_grad[0:3]
-            print '5081: ',self.global_ac_grad[5081]
 
             # update synchronization mask & prepare gradient
             self.update_synchronization_mask()

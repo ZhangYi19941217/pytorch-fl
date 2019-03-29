@@ -1,7 +1,7 @@
 import torch
 import numpy
-import torch.distributed.deprecated as dist
-#import torch.distributed as dist
+#import torch.distributed.deprecated as dist
+import torch.distributed as dist
 from datasource import Mnist, Mnist_noniid, Cifar10, Cifar10_noniid
 from model import CNNMnist, CNNCifar, ResNet18
 import copy
@@ -25,9 +25,7 @@ MODEL = 'CNN'
 #MODEL = 'ResNet18'
 SAVE = True
 CUDA = torch.cuda.is_available()
-WINDOW_SIZE = 10
-INITIAL_FREQ = 16 * 500  
-INITIAL_FREQ = 128  
+INITIAL_FREQ = 250 
 RATIO = 0.8  
 
 def logging(string):
@@ -126,26 +124,68 @@ class PAS_Manager:
         self.global_ac_grad = torch.zeros(self.flattened_shape)
         self.last_global_ac_grad = torch.zeros(self.flattened_shape)
 
-        self.observation_window_size = 20
-        self.swap_ratio_as_stable = 0.6
-        self.swap_history = torch.zeros(self.observation_window_size, self.flattened_shape[0])
-        self.swap_count = torch.zeros(self.flattened_shape)
+        self.change_phase_threshold = 0.5
+
+        self.ema_alpha = 0.9 
+        self.swap_ema = torch.zeros(self.flattened_shape).float()
+        self.global_ac_grad_ema = torch.zeros(self.flattened_shape)
+        self.global_abs_ac_grad_ema = torch.zeros(self.flattened_shape)
+        self.swap_ema_threshold = 0.5
+        self.global_ac_grad_ema_threshold = 0.2 # this shall be larger than 1-self.ema_alpha
         self.phase = 0
+
+        self.observation_window_size = 20
+        self.history = torch.zeros(self.observation_window_size, self.flattened_shape[0])
 
     def update_synchronization_mask(self):
         # update the synchronization mask of each parameter based on global gradient stability
         print 'ac & last_ac', self.global_ac_grad, self.last_global_ac_grad
         print 'product', self.global_ac_grad * self.last_global_ac_grad
-        self.swap_history = torch.cat((self.swap_history[1:], (self.global_ac_grad*self.last_global_ac_grad).unsqueeze(0)), 0)
-#        self.swap_history = torch.cat((self.swap_history[1:], (self.global_ac_grad*self.last_global_ac_grad)), 0)
-        print self.swap_history[-1], self.swap_history.shape
-        self.swap_count = sum(self.swap_history < 0)
-        print self.swap_count
-        self.last_global_ac_grad = self.global_ac_grad 
-        for i in range(len(self.swap_count)):
-            if self.synchronization_mask[i] > 0 and self.swap_count[i] > self.swap_ratio_as_stable * self.observation_window_size:
+
+        self.history = torch.cat((self.history[1:], (self.global_ac_grad).unsqueeze(0)), 0)
+
+        self.swap_ema = self.swap_ema * self.ema_alpha + (self.global_ac_grad*self.last_global_ac_grad < 0).float() * (1.0 - self.ema_alpha)
+        self.global_ac_grad_ema = self.global_ac_grad_ema * self.ema_alpha + self.global_ac_grad * (1.0 - self.ema_alpha)
+        self.global_abs_ac_grad_ema = self.global_abs_ac_grad_ema * self.ema_alpha + torch.abs(self.global_ac_grad) * (1.0 - self.ema_alpha)
+#        self.synchronization_mask = self.synchronization_mask * (self.swap_ema > self.swap_ema_threshold) # meaning that swap occurs when 
+#        self.synchronization_mask = self.synchronization_mask * (torch.abs(self.global_ac_grad_ema) / self.global_abs_ac_grad_ema > self.global_ac_grad_ema_threshold) 
+        for i in range(len(self.swap_ema)):
+            if self.synchronization_mask[i] > 0 and torch.abs(self.global_ac_grad_ema[i]) / self.global_abs_ac_grad_ema[i] < self.global_ac_grad_ema_threshold and self.swap_ema[i] > self.swap_ema_threshold:
                 print 'position '+str(i)+' flip too often, now frozen'
+                print self.history[:,i], self.global_ac_grad_ema[i], self.swap_ema[i]
                 self.synchronization_mask[i] = 0
+        self.last_global_ac_grad = self.global_ac_grad 
+
+    def after_sync(self, model, iter_id):
+        if iter_id % self.sync_frequency == 0:
+            for p in model.parameters():
+                dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
+                p.data /= self.world_size
+
+    def sync(self, model, iter_id):
+        if self.phase > 0:
+            for p in model.parameters():
+                dist.all_reduce(p.grad, op=dist.reduce_op.SUM, group=self.group)
+                p.grad /= self.world_size
+            return
+
+        grad = [p.grad for p in model.parameters()]
+        flattened_grad = torch.tensor([])
+        for g in grad:
+            frag = g.view(-1)
+            flattened_grad = torch.cat((flattened_grad, frag),0)
+#        flattened_grad = torch.cat([p.grad.data.view(-1) for p in model.parameters()], 0)
+
+        # filter gradient with mask
+        filtered_grad = flattened_grad * self.synchronization_mask.float()
+        self.local_ac_grad += filtered_grad
+        valid_grad = filtered_grad
+
+        if iter_id % self.sync_frequency == 0:
+            print 'sync now:', iter_id
+            # squeeze those parameters to be communicated into one tensor
+            transmitted_grad = torch.masked_select(self.local_ac_grad, self.synchronization_mask)
+        self.last_global_ac_grad = self.global_ac_grad 
 
     def after_sync(self, model, iter_id):
         if iter_id % self.sync_frequency == 0:
@@ -194,8 +234,8 @@ class PAS_Manager:
         for i, p in enumerate(model.parameters()):
             p.grad.data = valid_grad[self.frag_index_list[i][0]:self.frag_index_list[i][1]].view(self.frag_shape_list[i])
 #        model.parameters.grad.data
-        if sum(self.synchronization_mask) == 0:
-            self.phase = 1
+#        if sum(self.synchronization_mask) / self.flattened_shape[0] < self.change_phase_threshold:
+#            self.phase = 1
    
 
         
@@ -217,7 +257,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     iter_id = 0
     epoch_id = 0
     while epoch_id < MAX_ROUND:            
-        print('\n\n--- start epoch '+ str(epoch_id) + ' ---')
+#        print('\n\n--- start epoch '+ str(epoch_id) + ' ---')
         if SAVE and epoch_id == 0 and not os.path.exists('autoencoder'+str(rank)+'.t7'):
             save_model(model, epoch_id, rank)
             logging('\t## Model Saved')
@@ -226,6 +266,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
         
         for step, (b_x, b_y) in enumerate(train_loader):
 #            print('--- start batch '+ str(batch_id) + ' ---')
+            iter_id += 1
             if CUDA:
                 b_x = b_x.cuda()
                 b_y = b_y.cuda()
@@ -245,10 +286,9 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
 
             if iter_id % INITIAL_FREQ == 0:
                 accuracy = test(test_loader, model)
-                logging(' -- Finish epoch: '+str(iter_id/INITIAL_FREQ) + ' -- | test accuracy: '+str(accuracy))
+                logging(' -- Finish epoch: '+str(iter_id/INITIAL_FREQ) + ' -- | test accuracy: '+str(accuracy) + '\n')
 #                print(pas_manager.sync_frequency_list)
                 epoch_id += 1 
-            iter_id += 1
         #accuracy = test(test_loader, model)
         #print(' - After round ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
         #print('$ model parameters:')
