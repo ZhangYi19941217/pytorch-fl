@@ -156,36 +156,6 @@ class PAS_Manager:
                 self.synchronization_mask[i] = 0
         self.last_global_ac_grad = self.global_ac_grad 
 
-    def after_sync(self, model, iter_id):
-        if iter_id % self.sync_frequency == 0:
-            for p in model.parameters():
-                dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
-                p.data /= self.world_size
-
-    def sync(self, model, iter_id):
-        if self.phase > 0:
-            for p in model.parameters():
-                dist.all_reduce(p.grad, op=dist.reduce_op.SUM, group=self.group)
-                p.grad /= self.world_size
-            return
-
-        grad = [p.grad for p in model.parameters()]
-        flattened_grad = torch.tensor([])
-        for g in grad:
-            frag = g.view(-1)
-            flattened_grad = torch.cat((flattened_grad, frag),0)
-#        flattened_grad = torch.cat([p.grad.data.view(-1) for p in model.parameters()], 0)
-
-        # filter gradient with mask
-        filtered_grad = flattened_grad * self.synchronization_mask.float()
-        self.local_ac_grad += filtered_grad
-        valid_grad = filtered_grad
-
-        if iter_id % self.sync_frequency == 0:
-            print 'sync now:', iter_id
-            # squeeze those parameters to be communicated into one tensor
-            transmitted_grad = torch.masked_select(self.local_ac_grad, self.synchronization_mask)
-        self.last_global_ac_grad = self.global_ac_grad 
 
     def after_sync(self, model, iter_id):
         if iter_id % self.sync_frequency == 0:
