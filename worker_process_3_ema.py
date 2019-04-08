@@ -124,14 +124,14 @@ class PAS_Manager:
         self.global_ac_grad = torch.zeros(self.flattened_shape)
         self.last_global_ac_grad = torch.zeros(self.flattened_shape)
 
-        self.change_phase_threshold = 0.5
+        self.change_phase_threshold = 0.8
 
-        self.ema_alpha = 0.9 
+        self.ema_alpha = 0.99 
         self.swap_ema = torch.zeros(self.flattened_shape).float()
         self.global_ac_grad_ema = torch.zeros(self.flattened_shape)
         self.global_abs_ac_grad_ema = torch.zeros(self.flattened_shape)
         self.swap_ema_threshold = 0.5
-        self.global_ac_grad_ema_threshold = 0.2 # this shall be larger than 1-self.ema_alpha
+        self.global_ac_grad_ema_threshold = 0.1 # this shall be larger than 1-self.ema_alpha
         self.phase = 0
 
         self.observation_window_size = 20
@@ -151,7 +151,7 @@ class PAS_Manager:
 #        self.synchronization_mask = self.synchronization_mask * (torch.abs(self.global_ac_grad_ema) / self.global_abs_ac_grad_ema > self.global_ac_grad_ema_threshold) 
         for i in range(len(self.swap_ema)):
             if self.synchronization_mask[i] > 0 and torch.abs(self.global_ac_grad_ema[i]) / self.global_abs_ac_grad_ema[i] < self.global_ac_grad_ema_threshold and self.swap_ema[i] > self.swap_ema_threshold:
-                print 'position '+str(i)+' flip too often, now frozen'
+                print 'position - '+str(i)+' - flip too often, now frozen'
                 print self.history[:,i], self.global_ac_grad_ema[i], self.swap_ema[i]
                 self.synchronization_mask[i] = 0
         self.last_global_ac_grad = self.global_ac_grad 
@@ -204,10 +204,8 @@ class PAS_Manager:
         for i, p in enumerate(model.parameters()):
             p.grad.data = valid_grad[self.frag_index_list[i][0]:self.frag_index_list[i][1]].view(self.frag_shape_list[i])
 #        model.parameters.grad.data
-#        if sum(self.synchronization_mask) / self.flattened_shape[0] < self.change_phase_threshold:
-#            self.phase = 1
-   
-
+        if sum(self.synchronization_mask) / self.flattened_shape[0] < self.change_phase_threshold:
+            self.phase = 1
         
 def run(world_size, rank, group, epoch_per_round, batch_size):
 
