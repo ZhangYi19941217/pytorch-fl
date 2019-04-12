@@ -25,7 +25,7 @@ MODEL = 'CNN'
 #MODEL = 'ResNet18'
 SAVE = True
 CUDA = torch.cuda.is_available()
-INITIAL_FREQ = 250 
+INITIAL_FREQ = 128 
 RATIO = 0.8  
 
 def logging(string):
@@ -73,7 +73,7 @@ def load_model(group, rank):
         model = ResNet18()
     if CUDA:
         model.cuda()
-    if False and SAVE and os.path.exists('autoencoder'+str(rank)+'.t7'):
+    if SAVE and os.path.exists('autoencoder'+str(rank)+'.t7'):
         logging('===> Try resume from checkpoint')
         checkpoint = torch.load('autoencoder'+str(rank)+'.t7')
         model.load_state_dict(checkpoint['state'])
@@ -85,6 +85,11 @@ def load_model(group, rank):
         logging('model created')
     return model, round
 
+def all_reduce(model, world_size, group):
+    for param in model.parameters():
+        dist.all_reduce(param.data, op=dist.reduce_op.SUM, group=group)
+        param.data /= world_size
+    return model
 def test(test_loader, model):
     accuracy = 0
     positive_test_number = 0
@@ -107,6 +112,8 @@ class PAS_Manager:
         self.group = group
         self.world_size = world_size
         self.sync_frequency = sync_frequency
+        self.last_model_copy = copy.deepcopy(model)
+        self.model = model
 
         s_index = 0
         flattened_grad = torch.tensor([])
@@ -126,7 +133,7 @@ class PAS_Manager:
         self.global_ac_grad = torch.zeros(self.flattened_shape)
         self.last_global_ac_grad = torch.zeros(self.flattened_shape)
 
-        self.change_phase_threshold = 0.6
+        self.change_phase_threshold = 0.5
 
         self.ema_alpha = 0.99 
         self.swap_ema = torch.zeros(self.flattened_shape).float()
@@ -134,103 +141,65 @@ class PAS_Manager:
         self.global_abs_ac_grad_ema = torch.zeros(self.flattened_shape)
         self.swap_ema_threshold = 0.5
         self.global_ac_grad_ema_threshold = 0.1 # this shall be larger than 1-self.ema_alpha
-        self.phase = 0
+        self.phase = 1
 
 #        self.observation_window_size = 20
 #        self.history = torch.zeros(self.observation_window_size, self.flattened_shape[0])
 
     def update_synchronization_mask(self):
         # update the synchronization mask of each parameter based on global gradient stability
-        print 'ac & last_ac', self.global_ac_grad, self.last_global_ac_grad
-        print 'product', self.global_ac_grad * self.last_global_ac_grad
+#        print 'ac & last_ac', self.global_ac_grad, self.last_global_ac_grad
+#        print 'product', self.global_ac_grad * self.last_global_ac_grad
 
 #        self.history = torch.cat((self.history[1:], (self.global_ac_grad).unsqueeze(0)), 0)
+
+        flattened_grad = torch.tensor([])
+        for param1, param2 in zip(self.last_model_copy.parameters(), self.model.parameters()):
+            frag = (param1 - param2).view(-1)
+            flattened_grad = torch.cat((flattened_grad, frag),0)
+        self.global_ac_grad = flattened_grad
 
         self.swap_ema = self.swap_ema * self.ema_alpha + (self.global_ac_grad*self.last_global_ac_grad < 0).float() * (1.0 - self.ema_alpha)
         self.global_ac_grad_ema = self.global_ac_grad_ema * self.ema_alpha + self.global_ac_grad * (1.0 - self.ema_alpha)
         self.global_abs_ac_grad_ema = self.global_abs_ac_grad_ema * self.ema_alpha + torch.abs(self.global_ac_grad) * (1.0 - self.ema_alpha)
-
-#        self.synchronization_mask = self.synchronization_mask * (self.swap_ema > self.swap_ema_threshold) # meaning that swap occurs when 
-#        self.synchronization_mask = self.synchronization_mask * (torch.abs(self.global_ac_grad_ema) / self.global_abs_ac_grad_ema > self.global_ac_grad_ema_threshold) 
-#        print 'test-1: ', float(sum(self.synchronization_mask.int()))
         for i in range(len(self.swap_ema)):
             if self.synchronization_mask[i] > 0 and torch.abs(self.global_ac_grad_ema[i]) / self.global_abs_ac_grad_ema[i] < self.global_ac_grad_ema_threshold and self.swap_ema[i] > self.swap_ema_threshold:
                 print 'position - '+str(i)+' - flip too often, now frozen'
-#                print self.history[:,i], self.global_ac_grad_ema[i], self.swap_ema[i]
                 self.synchronization_mask[i] = 0
         self.last_global_ac_grad = self.global_ac_grad 
-#        print 'test-2: ', float(sum(self.synchronization_mask))
 
 
-    def after_sync(self, model, iter_id):
-        if iter_id % self.sync_frequency == 0:
-            for p in model.parameters():
+    def sync(self, iter_id):
+        if self.phase > 0:
+            for p in self.model.parameters():
                 dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
                 p.data /= self.world_size
+        elif iter_id % self.sync_frequency == 0:
+            for p in self.model.parameters():
+                dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
+                p.data /= self.world_size
+            self.update_synchronization_mask()
+            self.last_model_copy = copy.deepcopy(self.model)
 
-    def sync(self, model, iter_id):
+    def filter(self, iter_id):
         if self.phase > 0:
-            for p in model.parameters():
-                dist.all_reduce(p.grad, op=dist.reduce_op.SUM, group=self.group)
-                p.grad /= self.world_size
-            return
+            return False
 
-        grad = [p.grad for p in model.parameters()]
+        grad = [p.grad for p in self.model.parameters()]
         flattened_grad = torch.tensor([])
         for g in grad:
             frag = g.view(-1)
             flattened_grad = torch.cat((flattened_grad, frag),0)
-#        flattened_grad = torch.cat([p.grad.data.view(-1) for p in model.parameters()], 0)
 
-        # filter gradient with mask
-        #filtered_grad = flattened_grad * self.synchronization_mask.float()
-        filtered_grad = torch.zeros(self.flattened_shape) 
-#        filtered_grad[self.synchronization_mask] = flat
-#        filtered_grad = torch.where(self.synchronization_mask > 0, flattened_grad, filtered_grad)
-        filtered_grad = torch.where(self.fixed_synchronization_mask > 0, flattened_grad, filtered_grad)
-        self.local_ac_grad += filtered_grad
-        valid_grad = filtered_grad
+        filtered_grad = torch.where(self.synchronization_mask > 0, flattened_grad, torch.zeros(self.flattened_shape))
 
-        if iter_id % self.sync_frequency == 0:
-            print 'sync now:', iter_id, '; phase:', self.phase
-            # squeeze those parameters to be communicated into one tensor
-#            transmitted_grad = torch.masked_select(self.local_ac_grad, self.synchronization_mask)
-            transmitted_grad = torch.masked_select(self.local_ac_grad, self.fixed_synchronization_mask)
-            dist.all_reduce(transmitted_grad, op=dist.reduce_op.SUM, group=self.group)
-#            numpy.save(str(iter_id)+'-tm_grad', transmitted_grad.detach().numpy())
-            transmitted_grad /= self.world_size
-
-            # unsqueeze transmitted grad to full length flattened grad
-            self.global_ac_grad = torch.zeros(self.flattened_shape) 
-#            self.global_ac_grad[self.synchronization_mask] = transmitted_grad
-            self.global_ac_grad[self.fixed_synchronization_mask] = transmitted_grad
-            print 'global_ac_grad[0:3]:', self.global_ac_grad[0:3]
-            print '5081: ',self.global_ac_grad[5081]
-
-            # update synchronization mask & prepare gradient
-            self.update_synchronization_mask()
-            valid_grad = filtered_grad + self.global_ac_grad - self.local_ac_grad
-#            numpy.save(str(iter_id)+'-gg', self.global_ac_grad.detach().numpy())
-#            numpy.save(str(iter_id)+'-lg', self.local_ac_grad.detach().numpy())
-#            numpy.save(str(iter_id)+'-fg', filtered_grad.detach().numpy())
-#            numpy.save(str(iter_id)+'-vg', valid_grad.detach().numpy())
-#            numpy.save(str(iter_id)+'-model', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
-            self.local_ac_grad = torch.zeros(self.flattened_shape)
-#            exit()
-#            numpy.save(str(iter_id)+'-model-y', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
-    
-            if (iter_id / self.sync_frequency) % 50 == 0:
-                self.synchronization_mask = torch.ones(self.flattened_shape).byte()
-
-        # unwrap to high-dimension gradient
-        for i, p in enumerate(model.parameters()):
-            p.grad.data = valid_grad[self.frag_index_list[i][0]:self.frag_index_list[i][1]].view(self.frag_shape_list[i])
-#        model.parameters.grad.data
+        for i, p in enumerate(self.model.parameters()):
+            p.grad.data = filtered_grad[self.frag_index_list[i][0]:self.frag_index_list[i][1]].view(self.frag_shape_list[i])
 
         if iter_id % self.sync_frequency == 0:
             print 'stable ratio: ', 1 - float(sum(self.synchronization_mask.int())) / self.flattened_shape[0] 
             if self.phase == 0 and float(sum(self.synchronization_mask.int())) / self.flattened_shape[0] < self.change_phase_threshold:
-                self.phase = 0
+                self.phase = 1
                 return True
         return False
         
@@ -240,10 +209,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     test_loader = get_test_loader(rank)
 
     model, round = load_model(group, rank)
-#    numpy.save('zero0', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
-#    optimizer = torch.optim.SGD(model.parameters(), lr=LR, weight_decay=1e-3)
-    optimizer = torch.optim.SGD(model.parameters(), lr=LR)
-#    numpy.save('zero1', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
+    optimizer = torch.optim.SGD(model.parameters(), lr=LR, weight_decay=1e-2)
     loss_func = torch.nn.CrossEntropyLoss()
 
     print('initial model parameters: ')
@@ -252,22 +218,16 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     sys.stdout.flush()
 
     pas_manager = PAS_Manager(model, INITIAL_FREQ, world_size, group)
-#    numpy.save('zero2', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
     iter_id = 0
     epoch_id = 0
     while epoch_id < MAX_ROUND:            
-#        print('\n\n--- start epoch '+ str(epoch_id) + ' ---')
         if SAVE and epoch_id == 0 and not os.path.exists('autoencoder'+str(rank)+'.t7'):
             save_model(model, epoch_id, rank)
             logging('\t## Model Saved')
-#            numpy.save('zero3', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
-            accuracy = test(test_loader, model)
-            print(' - Before epoch: ', epoch_id, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
-#            numpy.save('zero', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
+#            accuracy = test(test_loader, model)
         
         for step, (b_x, b_y) in enumerate(train_loader):
-#            print('--- start batch '+ str(batch_id) + ' ---')
-            iter_id += 1
+            print('--- start iteration '+ str(iter_id) + ' ---')
             if CUDA:
                 b_x = b_x.cuda()
                 b_y = b_y.cuda()
@@ -275,37 +235,19 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
             output = model(b_x)
             loss = loss_func(output, b_y)
             loss.backward()
-
-            # all the detailed worker mechanism 
-            r = pas_manager.sync(model, iter_id)
-#            numpy.save(str(iter_id)+'-b', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
-#            numpy.save(str(iter_id)+'-vgrad', numpy.asarray([p.grad.detach().numpy() for p in model.parameters()]))
-#                train_loader = 
-#                optim.lr = 
-
+            r = pas_manager.filter(iter_id)
             optimizer.step()
-#            numpy.save(str(iter_id)+'-a', numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
+            pas_manager.sync(iter_id)
+
             if r:
                 save_model(model, epoch_id, rank)
-#            logging(' iteration ' + str(iter_id) + ' finished')
-#            pas_manager.after_sync(model, iter_id)
 
-#            pas_manager.sync(model, iter_id)
-            if pas_manager.phase > 0:
-                accuracy = test(test_loader, model)
-                logging(' -- Finish epoch: '+str(iter_id/INITIAL_FREQ) + ' iteration: '+ str(iter_id) + ' ; -- | test accuracy: '+str(accuracy) + '\n')
             if iter_id % INITIAL_FREQ == 0:
+#                model = all_reduce(model, world_size, group)
                 accuracy = test(test_loader, model)
-                logging(' -- Finish epoch: '+str(iter_id/INITIAL_FREQ) + ' -- | test accuracy: '+str(accuracy) + '\n')
-#                numpy.save(str(iter_id/INITIAL_FREQ), numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
-#                print(pas_manager.sync_frequency_list)
+                logging(' -- Finish epoch: '+str(iter_id/INITIAL_FREQ) + ' -- | test accuracy: '+str(accuracy))
                 epoch_id += 1 
-        #accuracy = test(test_loader, model)
-        #print(' - After round ', round, 'Rank: ', rank, '| test accuracy: '+str(accuracy))
-        #print('$ model parameters:')
-        #print(list(model.parameters())[0][0][0])
-        #logging(' -- Finish batch: '+str(batch_id) + ' -- | test accuracy: '+str(accuracy))
-        #round += 1
+            iter_id += 1
 
 def init_processes(master_address, world_size, rank, epoch_per_round, batch_size, run):
     # change 'tcp' to 'nccl' if running on GPU worker
