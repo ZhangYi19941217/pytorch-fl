@@ -1,4 +1,5 @@
 import torch
+import psutil
 import numpy
 try:
     import torch.distributed.deprecated as dist
@@ -73,7 +74,7 @@ def load_model(group, rank):
         model = ResNet18()
     if CUDA:
         model.cuda()
-    if SAVE and os.path.exists('autoencoder'+str(rank)+'.t7'):
+    if False and SAVE and os.path.exists('autoencoder'+str(rank)+'.t7'):
         logging('===> Try resume from checkpoint')
         checkpoint = torch.load('autoencoder'+str(rank)+'.t7')
         model.load_state_dict(checkpoint['state'])
@@ -132,6 +133,7 @@ class PAS_Manager:
 
         self.ema_alpha = 0.99 
         self.swap_ema = torch.zeros(self.flattened_shape).float()
+#        self.swap_ema = [0.0]*len(self.flattened_shape)
         self.global_ac_grad_ema = torch.zeros(self.flattened_shape).float()
         self.global_abs_ac_grad_ema = torch.zeros(self.flattened_shape).float()
         self.swap_ema_threshold = 0.5
@@ -156,17 +158,18 @@ class PAS_Manager:
             if self.synchronization_mask[i] > 0:
                 # update stability statistics only for those active parameters
                 self.swap_ema[i] = self.swap_ema[i] * self.ema_alpha + (self.global_ac_grad[i] * self.last_global_ac_grad[i] < 0).float() * (1.0 - self.ema_alpha)
-                self.global_ac_grad_ema[i] = self.global_ac_grad_ema[i] * self.ema_alpha + self.global_ac_grad[i] * (1.0 - self.ema_alpha)
-                self.global_abs_ac_grad_ema[i] = self.global_abs_ac_grad_ema[i] * self.ema_alpha + torch.abs(self.global_ac_grad[i]) * (1.0 - self.ema_alpha)
+                self.global_ac_grad_ema[i] = self.global_ac_grad_ema[i] * self.ema_alpha + float(self.global_ac_grad[i]) * (1.0 - self.ema_alpha)
+                self.global_abs_ac_grad_ema[i] = self.global_abs_ac_grad_ema[i] * self.ema_alpha + abs(float(self.global_ac_grad[i])) * (1.0 - self.ema_alpha)
                 
                 # update frozen length for those active parameters
                 if torch.abs(self.global_ac_grad_ema[i]) / self.global_abs_ac_grad_ema[i] < self.global_ac_grad_ema_threshold and self.swap_ema[i] > self.swap_ema_threshold:
-                    print 'sign 0; round: ', self.round_id, '; position: ', i
                     self.frozen_lengths[i] += 1
+                    print '1 - identified as stable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
                 else:
-                    print 'sign 0: round: ', self.round_id, '; position: ', i 
+                    print '0 - identified as unstable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
                     self.frozen_lengths[i] /= 2 
                 self.defrozen_round_ids[i] = self.round_id + self.frozen_lengths[i] + 1
+        print 'sampled frozen_length: ', self.frozen_lengths[0]
 
         # frozen the active parameters
         self.last_global_ac_grad = self.global_ac_grad 
@@ -253,6 +256,7 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
             if is_synced:
                 accuracy = test(test_loader, model)
                 logging(' -- Finish round: '+str(pas_manager.round_id) + ' -- | test accuracy: '+str(accuracy))
+                print('memory percent: ' + str(psutil.virtual_memory()[2]))
 
         epoch_id += 1 
 
