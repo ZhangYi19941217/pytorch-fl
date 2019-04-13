@@ -1,5 +1,5 @@
 import torch
-import psutil
+#import psutil
 import numpy
 try:
     import torch.distributed.deprecated as dist
@@ -124,6 +124,7 @@ class PAS_Manager:
             s_index = e_index
             flattened_grad = torch.cat((flattened_grad, frag),0)
 
+        self.model_size = len(flattened_grad)
         self.flattened_shape = flattened_grad.shape
         self.synchronization_mask = torch.ones(self.flattened_shape).byte()
         self.global_ac_grad = torch.zeros(self.flattened_shape)
@@ -144,6 +145,10 @@ class PAS_Manager:
         self.frozen_lengths = torch.zeros(self.flattened_shape).int()
         self.defrozen_round_ids = torch.zeros(self.flattened_shape).int()
 
+        self.comp_comm_ratio = 0.6 # if more than 60% parameters is stable, then increase the synchronization frequency; else reduce the synchronization frequency
+        self.change_frequency_step = int(0.05 * self.sync_frequency)
+        self.next_sync_iter_id = 0
+
     def update_frozen_lengths(self):
         # update the synchronization mask of each parameter based on global gradient stability
 
@@ -154,7 +159,7 @@ class PAS_Manager:
             flattened_grad = torch.cat((flattened_grad, frag),0)
         self.global_ac_grad = flattened_grad
 
-        for i in range(len(self.swap_ema)):
+        for i in range(self.model_size):
             if self.synchronization_mask[i] > 0:
                 # update stability statistics only for those active parameters
                 self.swap_ema[i] = self.swap_ema[i] * self.ema_alpha + (self.global_ac_grad[i] * self.last_global_ac_grad[i] < 0).float() * (1.0 - self.ema_alpha)
@@ -164,12 +169,11 @@ class PAS_Manager:
                 # update frozen length for those active parameters
                 if torch.abs(self.global_ac_grad_ema[i]) / self.global_abs_ac_grad_ema[i] < self.global_ac_grad_ema_threshold and self.swap_ema[i] > self.swap_ema_threshold:
                     self.frozen_lengths[i] += 1
-                    print '1 - identified as stable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
+#                    print '1 - identified as stable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
                 else:
-                    print '0 - identified as unstable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
+#                    print '0 - identified as unstable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
                     self.frozen_lengths[i] /= 2 
                 self.defrozen_round_ids[i] = self.round_id + self.frozen_lengths[i] + 1
-        print 'sampled frozen_length: ', self.frozen_lengths[0]
 
         # frozen the active parameters
         self.last_global_ac_grad = self.global_ac_grad 
@@ -179,7 +183,7 @@ class PAS_Manager:
             for p in self.model.parameters():
                 dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
                 p.data /= self.world_size
-        elif iter_id % self.sync_frequency == 0:
+        elif iter_id == self.next_sync_iter_id:
             # current for simplicity the full model is transmitted, but it can be compressed later
             for p in self.model.parameters():
                 dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
@@ -191,6 +195,17 @@ class PAS_Manager:
             # update round id and defrozen corresponded parameters
             self.round_id += 1
             self.synchronization_mask = torch.where(self.defrozen_round_ids == self.round_id, torch.tensor(1).byte(), torch.tensor(0).byte())
+
+            # adjust the synchronization frequency when necessary
+            stable_ratio = 1 - float(sum(self.synchronization_mask.int())) / self.model_size
+#            print self.synchronization_mask
+            if stable_ratio > self.comp_comm_ratio:
+                self.sync_frequency = (self.sync_frequency + 1) / 2
+            else:
+                # if few parameters are stable, we shall reduce the synchronization frequency
+                self.sync_frequency += self.change_frequency_step
+            self.next_sync_iter_id += self.sync_frequency
+            print 'at iteration: ', iter_id, '; stable ratio: ', stable_ratio, '; new synchronization frequency: ', self.sync_frequency
             return True
         return False
 
@@ -239,7 +254,6 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
             logging('\t## Model Saved')
         
         for step, (b_x, b_y) in enumerate(train_loader):
-            iter_id += 1
             if CUDA:
                 b_x = b_x.cuda()
                 b_y = b_y.cuda()
@@ -256,7 +270,8 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
             if is_synced:
                 accuracy = test(test_loader, model)
                 logging(' -- Finish round: '+str(pas_manager.round_id) + ' -- | test accuracy: '+str(accuracy))
-                print('memory percent: ' + str(psutil.virtual_memory()[2]))
+#                print('memory percent: ' + str(psutil.virtual_memory()[2]))
+            iter_id += 1
 
         epoch_id += 1 
 
