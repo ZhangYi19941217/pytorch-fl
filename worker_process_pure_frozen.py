@@ -131,11 +131,9 @@ class PAS_Manager:
         self.flattened_shape = flattened_grad.shape
         self.synchronization_mask = torch.ones(self.flattened_shape).byte()
         self.global_ac_grad = torch.zeros(self.flattened_shape)
-        self.last_global_ac_grad = torch.zeros(self.flattened_shape)
 
         self.ema_alpha = 0.99 
         self.swap_ema = torch.zeros(self.flattened_shape).float()
-#        self.swap_ema = [0.0]*len(self.flattened_shape)
         self.global_ac_grad_ema = torch.zeros(self.flattened_shape).float()
         self.global_abs_ac_grad_ema = torch.zeros(self.flattened_shape).float()
         self.swap_ema_threshold = 0.5
@@ -155,30 +153,28 @@ class PAS_Manager:
             flattened_grad = torch.cat((flattened_grad, frag),0)
         self.global_ac_grad = flattened_grad
 
-        for i in range(self.model_size):
-            if self.synchronization_mask[i] > 0:
-                # update stability statistics only for those active parameters
-                self.swap_ema[i] = self.swap_ema[i] * self.ema_alpha + (self.global_ac_grad[i] * self.last_global_ac_grad[i] < 0).float() * (1.0 - self.ema_alpha)
-                self.global_ac_grad_ema[i] = self.global_ac_grad_ema[i] * self.ema_alpha + float(self.global_ac_grad[i]) * (1.0 - self.ema_alpha)
-                self.global_abs_ac_grad_ema[i] = self.global_abs_ac_grad_ema[i] * self.ema_alpha + abs(float(self.global_ac_grad[i])) * (1.0 - self.ema_alpha)
-                
-                # update frozen length for those active parameters
-                if torch.abs(self.global_ac_grad_ema[i]) / self.global_abs_ac_grad_ema[i] < self.global_ac_grad_ema_threshold and self.swap_ema[i] > self.swap_ema_threshold:
-                    self.frozen_lengths[i] += 1
-#                    print '1 - identified as stable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
-                else:
-#                    print '0 - identified as unstable; round: ', self.round_id, '; position: ', i, 'frozen for: ', float(self.frozen_lengths[i])
-                    self.frozen_lengths[i] /= 2 
-                self.defrozen_round_ids[i] = self.round_id + self.frozen_lengths[i] + 1
+        self.global_ac_grad_ema = self.global_ac_grad_ema * self.ema_alpha + self.global_ac_grad * (1.0 - self.ema_alpha)
+        self.global_abs_ac_grad_ema = self.global_abs_ac_grad_ema * self.ema_alpha + torch.abs(self.global_ac_grad) * (1.0 - self.ema_alpha)
+        self.frozen_lengths = torch.where(torch.abs(self.global_ac_grad_ema) / self.global_abs_ac_grad_ema < self.global_ac_grad_ema_threshold, self.frozen_lengths+1, self.frozen_lengths/2)
+        self.defrozen_round_ids = self.round_id + self.frozen_lengths + 1
 
-        # frozen the active parameters
-        self.last_global_ac_grad = self.global_ac_grad 
 
     def sync(self, iter_id):
         if iter_id % self.sync_frequency == 0:
-            for p in self.model.parameters():
-                dist.all_reduce(p.data, op=dist.reduce_op.SUM, group=self.group)
-                p.data /= self.world_size
+            param = [p.data for p in self.model.parameters()]
+            flattened_param = torch.tensor([])
+            for p in param:
+                frag = p.view(-1)
+                flattened_param = torch.cat((flattened_param, frag),0)
+
+            transmitted_param = torch.masked_select(flattened_param, self.synchronization_mask)
+            dist.all_reduce(transmitted_param, op=dist.reduce_op.SUM, group=self.group)
+            transmitted_param /= self.world_size
+            flattened_param[self.synchronization_mask] = transmitted_param
+
+            for i, p in enumerate(self.model.parameters()):
+                p.data = flattened_param[self.frag_index_list[i][0]:self.frag_index_list[i][1]].view(self.frag_shape_list[i])
+
 
             if iter_id % self.evaluate_frequency == 0:
                 # current for simplicity the full model is transmitted, but it can be compressed later
@@ -191,7 +187,6 @@ class PAS_Manager:
                 stable_ratio = 1 - float(sum(self.synchronization_mask.int())) / self.model_size
 
                 # adjust the synchronization frequency when necessary
-                # print self.synchronization_mask
                 print 'at iteration: ', iter_id, '; round id: ', self.round_id, '; stable ratio: ', stable_ratio
                 return True
         return False

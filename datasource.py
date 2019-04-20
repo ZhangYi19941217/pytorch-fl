@@ -173,7 +173,7 @@ class Cifar10():
         self.test_data = datasets.CIFAR10(root='./cifar10/', train=False, transform=transforms.ToTensor())
 
         self.train_loader = torch.utils.data.DataLoader(dataset=self.train_data, batch_size=batchsize, shuffle=True)
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=10000, shuffle=True)
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_data, batch_size=100, shuffle=True)
 
     def get_train_data(self):
         return self.train_loader
