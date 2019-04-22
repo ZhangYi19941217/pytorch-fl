@@ -1,5 +1,5 @@
 import torch
-#import psutil
+import psutil
 import numpy
 try:
     import torch.distributed.deprecated as dist
@@ -26,10 +26,8 @@ IID = True
 #DATA_SET = 'Mnist'
 DATA_SET = 'Cifar10'
 MODEL = 'CNN'
-#MODEL = 'ResNet18'
 SAVE = True
 CUDA = torch.cuda.is_available()
-#INITIAL_FREQ = 128 
 
 def logging(string):
     print(str(datetime.now())+' '+str(string))
@@ -95,14 +93,15 @@ def test(test_loader, model):
     accuracy = 0
     positive_test_number = 0
     total_test_number = 0
-    for step, (test_x, test_y) in enumerate(test_loader):
-        if CUDA:
-            test_x = test_x.cuda()
-            test_y = test_y.cuda()
-        test_output = model(test_x)
-        pred_y = torch.max(test_output, 1)[1].data.cpu().numpy()
-        positive_test_number += (pred_y == test_y.data.cpu().numpy()).astype(int).sum()
-        total_test_number += float(test_y.size(0))
+    with torch.no_grad():
+        for step, (test_x, test_y) in enumerate(test_loader):
+            if CUDA:
+                test_x = test_x.cuda()
+                test_y = test_y.cuda()
+            test_output = model(test_x)
+            pred_y = torch.max(test_output, 1)[1].data.cpu().numpy()
+            positive_test_number += (pred_y == test_y.data.cpu().numpy()).astype(int).sum()
+            total_test_number += float(test_y.size(0))
     accuracy = positive_test_number / total_test_number
     return accuracy
 
@@ -113,7 +112,7 @@ class PAS_Manager:
         self.group = group
         self.world_size = world_size
         self.sync_frequency = 1
-        self.evaluate_frequency = 250 
+        self.evaluate_frequency = 50 
         self.last_model_copy = copy.deepcopy(model)
         self.model = model
 
@@ -132,11 +131,9 @@ class PAS_Manager:
         self.synchronization_mask = torch.ones(self.flattened_shape).byte()
         self.global_ac_grad = torch.zeros(self.flattened_shape)
 
-        self.ema_alpha = 0.99 
-        self.swap_ema = torch.zeros(self.flattened_shape).float()
+        self.ema_alpha = 0.95 
         self.global_ac_grad_ema = torch.zeros(self.flattened_shape).float()
         self.global_abs_ac_grad_ema = torch.zeros(self.flattened_shape).float()
-        self.swap_ema_threshold = 0.5
         self.global_ac_grad_ema_threshold = 0.1 # this shall be larger than 1-self.ema_alpha
 
         self.round_id = 0
@@ -149,7 +146,7 @@ class PAS_Manager:
         # restore grad in flattened form
         flattened_grad = torch.tensor([])
         for param1, param2 in zip(self.last_model_copy.parameters(), self.model.parameters()):
-            frag = (param1 - param2).view(-1)
+            frag = (param1.data - param2.data).view(-1)
             flattened_grad = torch.cat((flattened_grad, frag),0)
         self.global_ac_grad = flattened_grad
 
@@ -168,6 +165,7 @@ class PAS_Manager:
                 flattened_param = torch.cat((flattened_param, frag),0)
 
             transmitted_param = torch.masked_select(flattened_param, self.synchronization_mask)
+            logging('prepare transmitting in iter: '+str(iter_id))
             dist.all_reduce(transmitted_param, op=dist.reduce_op.SUM, group=self.group)
             transmitted_param /= self.world_size
             flattened_param[self.synchronization_mask] = transmitted_param
@@ -220,6 +218,8 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
     sys.stdout.flush()
 
     pas_manager = PAS_Manager(model, epoch_per_round, world_size, group)
+    if rank == 0:
+        numpy.save(str(pas_manager.round_id), numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
     iter_id = 0
     epoch_id = 0
     while epoch_id < MAX_ROUND:            
@@ -241,7 +241,12 @@ def run(world_size, rank, group, epoch_per_round, batch_size):
             is_synced = pas_manager.sync(iter_id) # whether there is true synchronization is hidden in pas_manager
             if is_synced:
                 accuracy = test(test_loader, model)
+#                accuracy = 0.1
                 logging(' -- Finish round: '+str(pas_manager.round_id) + ' -- | test accuracy: '+str(accuracy))
+                if rank == 0:
+                    numpy.save(str(pas_manager.round_id), numpy.asarray([i.detach().numpy() for i in list(model.parameters())]))
+            logging('iter '+str(iter_id)+' finish')
+            logging(str(psutil.virtual_memory()[2]))
         epoch_id += 1 
 
 def init_processes(master_address, world_size, rank, epoch_per_round, batch_size, run):
@@ -276,6 +281,7 @@ if __name__ == "__main__":
 
     # global MODEL, DATASET, IID 
     MODEL = args.model
+    MODEL = 'ResNet18'
     DATASET = args.dataset
     IID = True
 #    if args.iid == 1:
